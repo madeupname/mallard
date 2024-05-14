@@ -1,0 +1,6 @@
+duckdb>=0.10
+limits>=3.10
+polars>=0.20
+Requests>=2.31.0
+SQLAlchemy>=2.0.27
+TA-Lib>=0.4
