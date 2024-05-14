@@ -20,7 +20,7 @@ config = configparser.ConfigParser()
 config.read(config_file)
 
 db_file = config['DEFAULT']['db_file']
-daily_metrics = config['tiingo']['daily_metrics'].split(",")
+daily_metrics = config['DEFAULT']['daily_metrics'].split(",")
 eod_table = config['tiingo']['eod_table']
 fundamentals_reported_table = config['tiingo']['fundamentals_reported_table']
 

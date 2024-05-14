@@ -42,7 +42,7 @@ python -m mallard.tiingo.fundamentals_daily
 # load end of day data
 python -m mallard.tiingo.eod
 # build metrics 
-python -m mallard.metrics.daily_metrics
+python -m mallard.metrics.create_metrics
 ```
 This gets all data you're eligible for. Since it runs multithreaded, it will hit the request per second cap from
 Tiingo unless you're on a very slow connection. It uses a rate limiter to prevent rejections, but overall it will take
