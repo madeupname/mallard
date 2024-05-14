@@ -4,4 +4,5 @@ polars>=0.20
 Requests>=2.31.0
 SQLAlchemy>=2.0.27
 alembic>=1.13
+duckdb_engine>=0.12
 TA-Lib>=0.4
