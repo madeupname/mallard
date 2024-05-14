@@ -1,5 +1,5 @@
 column_mapping = {
-    'mallard_tiingo': {
+    'tiingo': {
         'symbol': 'ticker',
         'asset_type': 'assetType',
         'price_currency': 'priceCurrency',

@@ -36,9 +36,9 @@ alembic upgrade head
 # load supported tickers
 python -m mallard.tiingo.supported_tickers
 # load fundamental data (requires addon)
-python -m mallard.tiingo.fundamental
+python -m mallard.tiingo.fundamentals
 # load Tiingo's daily metrics
-python -m mallard.tiingo.fundamental_daily
+python -m mallard.tiingo.fundamentals_daily
 # load end of day data
 python -m mallard.tiingo.eod
 # build metrics 
