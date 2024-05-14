@@ -31,6 +31,8 @@ you have any data files open in Excel, your IDE, etc. This includes a console co
 As the scripts are in the library, you currently have to run this using these commands **in this order**:
 
 ```bash
+# create DB tables
+alembic upgrade head
 # load supported tickers
 python -m mallard.tiingo.supported_tickers
 # load fundamental data (requires addon)
