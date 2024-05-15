@@ -20,7 +20,7 @@ config = configparser.ConfigParser()
 config.read(config_file)
 
 db_file = config['DEFAULT']['db_file']
-daily_metrics = config['DEFAULT']['daily_metrics'].split(",")
+daily_metrics = config['DEFAULT']['metrics'].split(",")
 eod_table = config['tiingo']['eod_table']
 fundamentals_reported_table = config['tiingo']['fundamentals_reported_table']
 
@@ -51,24 +51,39 @@ if start is None:
 
 
 def parallelize(workers, vendor_symbol_ids, fun, *args, **kwargs):
+    print(f"Running {fun.__name__} in parallel with {workers} workers for {len(vendor_symbol_ids)} symbols.")
     """Run the given function in parallel for each vendor_symbol_id."""
     results = {'count_skip': 0, 'count_success': 0, 'count_fail': 0}
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        # Submit the tasks to the thread pool
-        futures = {executor.submit(fun, id, *args, **kwargs): id for id in vendor_symbol_ids}
-        for future in concurrent.futures.as_completed(futures):
-            row = futures[future]
-            try:
-                status = future.result()
-                if status == 'skip':
-                    results['count_skip'] += 1
-                elif status == 'success':
-                    results['count_success'] += 1
-                elif status == 'fail':
-                    results['count_fail'] += 1
-            except Exception as e:
-                print(f"Error processing {row}\n{e}")
+    if workers == 1:
+        for id in vendor_symbol_ids:
+            status = fun(id, *args, **kwargs)
+            if status == 'skip':
+                results['count_skip'] += 1
+            elif status == 'success':
+                results['count_success'] += 1
+            elif status == 'fail':
                 results['count_fail'] += 1
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # Submit the tasks to the thread pool
+            futures = {executor.submit(fun, id, *args, **kwargs): id for id in vendor_symbol_ids}
+            for future in concurrent.futures.as_completed(futures):
+                row = futures[future]
+                try:
+                    status = future.result()
+                    if status == 'skip':
+                        results['count_skip'] += 1
+                    elif status == 'success':
+                        results['count_success'] += 1
+                    elif status == 'fail':
+                        results['count_fail'] += 1
+                except Exception as e:
+                    print(f"Error processing {row}\n{e}")
+                    results['count_fail'] += 1
+                total = results['count_skip'] + results['count_success'] + results['count_fail']
+                if total > 0 and total % 500 == 0:
+                    print(
+                        f"{fun.__name__}: Skipped {results['count_skip']}  Updated {results['count_success']}  Failed {results['count_fail']}")
     return results
 
 
@@ -90,8 +105,11 @@ def update_metrics():
     vendor_symbol_ids = [row[0] for row in result]
     duckdb_con = duckdb.connect(db_file)
     if 'adtval' in daily_metrics:
+        print("Calculating avg_daily_trading_value...")
         avg_daily_trading_value(duckdb_con)
+        print("Done calculating avg_daily_trading_value")
     if 'macd' in daily_metrics:
+        print("Calculating MACD...")
         result = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
         logger.info(
             f"MACD: Skipped {result['count_skip']}  Updated {result['count_success']}  Failed {result['count_fail']}")

@@ -5,7 +5,7 @@ import duckdb
 import polars as pl
 import talib
 
-from mallard.tiingo.eod import logger
+from mallard.tiingo.tiingo_util import logger
 
 # Get config file
 config_file = os.getenv('MALLARD_CONFIG')
@@ -77,6 +77,7 @@ def update_macd(vendor_symbol_id: str, duckdb_con: duckdb.DuckDBPyConnection, st
             INSERT OR REPLACE INTO daily_metrics (vendor_symbol_id, date, macd, macd_signal, macd_hist)
             FROM results
         """)
+    return 'success'
 
 
 def avg_daily_trading_value(duckdb_con, value=20000000.0, start_date: str = '1990-06-01'):
@@ -137,6 +138,8 @@ def avg_daily_trading_value(duckdb_con, value=20000000.0, start_date: str = '199
     result_df = result_df.with_columns(
         (pl.col('avg_daily_trading_value') >= value * pl.col('adjusted_multiplier')).alias('has_min_trading_value')
     )
+    # Use Polars to drop unnecessary columns, keeping only vendor_symbol_id, date, has_min_trading_value
+    result_df = result_df.select(['vendor_symbol_id', 'date', 'has_min_trading_value'])
 
     # Insert has_min_trading_value into daily_metrics
     with duckdb_con.cursor() as con:
