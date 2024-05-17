@@ -33,7 +33,7 @@ def update_macd(vendor_symbol_id: str, duckdb_con: duckdb.DuckDBPyConnection, st
     """
     if duckdb_con is None:
         logger.error("update_macd: database connection is not provided.")
-        return 'fail'
+        raise ValueError("Database connection is not provided.")
 
     with duckdb_con.cursor() as con:
         # Fetch the price data

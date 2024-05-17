@@ -33,7 +33,7 @@ As the scripts are in the library, you currently have to run this using these co
 ```bash
 # create DB tables
 alembic upgrade head
-# load supported tickers
+# load supported tickers (fast)
 python -m mallard.tiingo.supported_tickers
 # load fundamental data (requires addon)
 python -m mallard.tiingo.fundamentals
@@ -47,6 +47,28 @@ python -m mallard.metrics.create_metrics
 This gets all data you're eligible for. Since it runs multithreaded, it will hit the request per second cap from
 Tiingo unless you're on a very slow connection. It uses a rate limiter to prevent rejections, but overall it will take
 4-5 hours to get all data assuming you have the largest fundamentals addon.
+
+### Updates
+Mallard tries to be efficient with updates. For EOD and "fundamentals daily" endpoints, if there is already data
+downloaded for a symbol, it downloads just the missing data and append it to the existing file. If you run on 
+a weekend or holiday, or immediately after a run, there may be no data to download and the update is skipped.
+
+There are some exceptions. When updating EOD data, if we discover an entry in dividend or split columns, we have to
+re-download the EOD data for that symbol to get correctly adjusted values. For fundamentals, we always download the
+entire file when there is an update because we have no idea what data was added. Could be an update, but could also be a
+correction.
+
+Tiingo offers no indication of supported dates by vendor symbol ID (permaTicker). As such, we can't know
+if you have all current data. It's a hack, but Tiingo appears to give non-standard responses (like the word
+"None" or "[]") if you're requesting data beyond the support date. If we get that, we mark it as an error and move to
+quarantine so it's skipped upon subsequent updates. This can be improved if Tiingo updates the supported tickers file
+with permaTicker. Even going by active status, I can't know if your last download was before it went inactive and if
+you got all the data, so I play it safe.
+
+Keep in mind there is no feed for finding out when data for a symbol was fixed. I've yet to see a data provider announce
+they had bad data and an update was required. The only solution is to regularly delete your whole working directory and
+database and start over. It's up to you how often you want to do that.
+
 ## Metrics
 Tiingo provides [a few metrics](https://www.tiingo.com/documentation/fundamentals), which are stored in the 
 tiingo_fundamentals_daily table. 

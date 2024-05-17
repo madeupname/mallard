@@ -1,5 +1,5 @@
 """
-This script downloads the daily metrics into tiingo_fundamentals_daily table.
+This script downloads the Tiingo-generated daily metrics (P/E, etc.) into tiingo_fundamentals_daily table.
 Must be run after fundamentals.py, which loads fundamentals meta file.
 """
 
@@ -15,7 +15,7 @@ import polars as pl
 import requests
 
 from mallard.RateLimiterContext import RateLimiterContext
-from mallard.normalization import column_mapping, get_column_mapper
+from mallard.normalization import get_column_mapper
 from mallard.tiingo.tiingo_util import logger, quarantine_data
 
 # Get config file
@@ -24,7 +24,8 @@ config = configparser.ConfigParser()
 config.read(config_file)
 
 if not config.getboolean('tiingo', 'has_fundamentals_addon'):
-    exit(0)
+    raise ValueError(
+        "Tiingo fundamentals addon required. If you have paid for this, update your config file. Exiting...")
 
 db_file = config['DEFAULT']['db_file']
 
@@ -78,7 +79,9 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             r = requests.get(url)
         r.raise_for_status()
         data = r.content
-        if r.content is None or r.content.startswith(b'[]'):
+        # Tiingo will literally return the word "None" in some cases, usually when there is no data after a date because
+        # the symbol is inactive. It may also be blank or [] - it's not consistent across APIs.
+        if not r.content or r.content.startswith(b'None') or r.content.startswith(b'[]'):
             quarantine_data(symbol, vendor_symbol_id, is_active, data)
             return 'fail'
         data_without_header = r.content.split(b'\n', 1)[1]
@@ -104,10 +107,12 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             with duckdb_con.cursor() as local_con:
                 local_con.execute(f"INSERT INTO {config['tiingo']['fundamentals_daily_table']} BY NAME FROM df")
         except duckdb.ConnectionException as e:
-            print(f"Can't connect to DB, exiting. Error:\n{e}")
+            msg = f"Can't connect to DB, exiting. Error:\n{e}"
+            print(msg)
+            logger.error(msg)
             exit(1)
         except Exception as e:
-            print(f"Error inserting {symbol} into EOD table\n{e}")
+            logger.error(f"Error inserting {symbol} into EOD table\n{e}")
             quarantine_data(symbol, vendor_symbol_id, is_active, data)
             return 'fail'
         if is_append:
@@ -135,6 +140,11 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
 workers = int(config['DEFAULT']['threads'])
 os.environ['NUMEXPR_MAX_THREADS'] = str(workers)
 duckdb_con = duckdb.connect(db_file)
+
+# Print the number of symbols to process
+msg = f"Starting daily fundamentals download. Processing {len(result)} symbols."
+logger.info(msg)
+print(msg)
 
 if workers == 1:
     for row in result:
@@ -171,6 +181,12 @@ else:
             except Exception as e:
                 logger.error(f"Error processing {row}\n{e}")
                 count_fail += 1
+            total = count_skip + count_new + count_update + count_fail
+            if total > 0 and total % 500 == 0:
+                print(
+                    f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
 
 duckdb_con.close()
-logger.info(f"Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+msg = f"Fundamentals daily processing complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}"
+logger.info(msg)
+print(msg)

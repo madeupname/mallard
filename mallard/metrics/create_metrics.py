@@ -51,8 +51,8 @@ if start is None:
 
 
 def parallelize(workers, vendor_symbol_ids, fun, *args, **kwargs):
-    print(f"Running {fun.__name__} in parallel with {workers} workers for {len(vendor_symbol_ids)} symbols.")
     """Run the given function in parallel for each vendor_symbol_id."""
+    print(f"Running {fun.__name__} in parallel with {workers} workers for {len(vendor_symbol_ids)} symbols.")
     results = {'count_skip': 0, 'count_success': 0, 'count_fail': 0}
     if workers == 1:
         for id in vendor_symbol_ids:
@@ -92,7 +92,9 @@ def update_metrics():
     Uses a ThreadPoolExecutor to run them in parallel if more than 1 worker specified."""
     workers = int(config['DEFAULT']['threads'])
     os.environ['NUMEXPR_MAX_THREADS'] = str(workers)
-    print(f"Updating metrics: {daily_metrics}")
+    msg = f"Updating metrics: {daily_metrics}"
+    print(msg)
+    logger.info(msg)
     # Get symbols to compile metrics on. We only care about symbols for which we have price and fundamental data.
     with duckdb.connect(db_file) as con:
         symbols_query = f"""
@@ -105,14 +107,21 @@ def update_metrics():
     vendor_symbol_ids = [row[0] for row in result]
     duckdb_con = duckdb.connect(db_file)
     if 'adtval' in daily_metrics:
-        print("Calculating avg_daily_trading_value...")
+        msg = "Calculating avg_daily_trading_value..."
+        print(msg)
+        logger.info(msg)
         avg_daily_trading_value(duckdb_con)
-        print("Done calculating avg_daily_trading_value")
+        msg = "Done calculating avg_daily_trading_value"
+        print(msg)
+        logger.info(msg)
     if 'macd' in daily_metrics:
-        print("Calculating MACD...")
+        msg = "Calculating MACD..."
+        print(msg)
+        logger.info(msg)
         result = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
-        logger.info(
-            f"MACD: Skipped {result['count_skip']}  Updated {result['count_success']}  Failed {result['count_fail']}")
+        msg = f"MACD: Skipped {result['count_skip']}  Updated {result['count_success']}  Failed {result['count_fail']}"
+        print(msg)
+        logger.info(msg)
 
 
 update_metrics()

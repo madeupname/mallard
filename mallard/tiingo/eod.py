@@ -4,7 +4,7 @@ import configparser
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import timedelta, datetime, date
 from io import StringIO
 from pathlib import Path
 
@@ -13,7 +13,7 @@ import polars as pl
 import requests
 
 from mallard.RateLimiterContext import RateLimiterContext
-from mallard.normalization import get_sql_column_provider, get_column_mapper
+from mallard.normalization import get_column_mapper
 from mallard.tiingo.tiingo_util import quarantine_file, quarantine_data
 
 # Get config file
@@ -27,6 +27,10 @@ logging.basicConfig(filename=config['DEFAULT']['log_file'], level=config['DEFAUL
                     format=config['DEFAULT']['log_format'])
 
 db_file = config['DEFAULT']['db_file']
+
+msg = f"Updating Tiingo EOD data. Using database {db_file}. "
+print(msg)
+logger.info(msg)
 
 
 def is_valid_eod_file(sym: str, file_path: str, duckdb_con):
@@ -91,6 +95,7 @@ if config['tiingo']['eod_source'] == 'tickers':
             GROUP BY symbol
         ) e ON s.symbol = e.symbol
         WHERE s.end_date > e.max_date""").fetchall()
+    msg = "Using Tiingo supported tickers file as the source of symbols. "
 else:
     # Use the fundamentals meta file to ensure you're getting symbols that are reporting financials.
     with duckdb.connect(db_file, read_only=True) as con:
@@ -104,7 +109,11 @@ else:
                 ) e ON f.vendor_symbol_id = e.vendor_symbol_id
                 WHERE f.symbol in (SELECT DISTINCT symbol FROM tiingo_symbols)
                 ORDER BY f.symbol""").fetchall()
+        msg = "Using Tiingo fundamentals meta file as the source of symbols. "
 
+msg += f"Processing {len(result)} symbols as required. "
+print(msg)
+logger.info(msg)
 
 def load_from_file(file_name, duckdb_con):
     """This is a utility function you can use if you already have downloaded price files."""
@@ -174,6 +183,18 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         try:
             # Create a DataFrame from the CSV data and rename the columns to match the EOD table
             df = pl.read_csv(StringIO(data.decode('utf-8')))
+            # If any values in divCash aren't 0, or any values in splitFactor aren't 1, we need to refetch the entire
+            # file.
+            if is_append:
+                divCash_non_zero = (df['divCash'] != 0).sum() > 0
+                splitFactor_not_one = (df['splitFactor'] != 1).sum() > 0
+                if (divCash_non_zero or splitFactor_not_one):
+                    # Delete the file
+                    os.remove(file)
+                    logger.info(
+                        f"{symbol}: Dividend or split detected. Refetching full history for {symbol} / {vendor_symbol_id}.")
+                    return update_symbol(symbol, '1900-01-01', duckdb_con, vendor_symbol_id, is_active)
+
             # Rename columns to match the EOD table
             col = get_column_mapper('tiingo')
             df = df.rename({col('adj_close'): 'adj_close', col('adj_high'): 'adj_high', col('adj_low'): 'adj_low',
@@ -183,7 +204,7 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             df = df.with_columns([pl.lit(vendor_symbol_id).alias('vendor_symbol_id'), pl.lit(symbol).alias('symbol')])
             # Insert the DataFrame into the EOD table
             with duckdb_con.cursor() as local_con:
-                local_con.execute(f"INSERT INTO {config['tiingo']['eod_table']} BY NAME FROM df")
+                local_con.execute(f"INSERT OR REPLACE INTO {config['tiingo']['eod_table']} BY NAME FROM df")
         except duckdb.ConnectionException as e:
             print(f"Can't connect to DB, exiting. Error:\n{e}")
             exit(1)
@@ -221,13 +242,28 @@ if workers == 1:
     for row in result:
         symbol = row[0]
         db_end_date = row[1]
+        if db_end_date and isinstance(db_end_date, date) and db_end_date >= datetime.today().date():
+            count_skip += 1
+            continue
         vendor_symbol_id = None
         is_active = None
         if len(row) == 4:
             vendor_symbol_id = row[2]
             is_active = row[3]
         start_date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
-        update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id, is_active)
+        status = update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id, is_active)
+        if status == 'skip':
+            count_skip += 1
+        elif status == 'new':
+            count_new += 1
+        elif status == 'update':
+            count_update += 1
+        elif status == 'fail':
+            count_fail += 1
+        # Print status every 500 symbols
+        total = count_skip + count_new + count_update + count_fail
+        if total > 0 and total % 500 == 0:
+            print(f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
 else:
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # Submit the tasks to the thread pool
@@ -235,6 +271,9 @@ else:
         for row in result:
             symbol = row[0]
             db_end_date = row[1]
+            if db_end_date and isinstance(db_end_date, date) and db_end_date >= datetime.today().date():
+                count_skip += 1
+                continue
             vendor_symbol_id = None
             is_active = None
             if len(row) == 4:
@@ -258,6 +297,11 @@ else:
             except Exception as e:
                 logger.error(f"Error processing {row}\n{e}")
                 count_fail += 1
+            # Print status every 500 symbols
+            total = count_skip + count_new + count_update + count_fail
+            if total > 0 and total % 500 == 0:
+                print(f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+
 
 duckdb_con.close()
-logger.info(f"Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+logger.info(f"EOD update complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
