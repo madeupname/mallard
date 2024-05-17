@@ -48,6 +48,9 @@ This gets all data you're eligible for. Since it runs multithreaded, it will hit
 Tiingo unless you're on a very slow connection. It uses a rate limiter to prevent rejections, but overall it will take
 4-5 hours to get all data assuming you have the largest fundamentals addon.
 
+To check if it's working, see the Jupyter notebook verification.ipynb. You can run the appropriate block after each 
+command to verify the data was correctly download. Also make sure you're checking your mallard.log.
+
 ### Updates
 Mallard tries to be efficient with updates. For EOD and "fundamentals daily" endpoints, if there is already data
 downloaded for a symbol, it downloads just the missing data and append it to the existing file. If you run on 
