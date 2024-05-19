@@ -107,7 +107,7 @@ else:
                     FROM {config['tiingo']['eod_table']}
                     GROUP BY vendor_symbol_id
                 ) e ON f.vendor_symbol_id = e.vendor_symbol_id
-                WHERE f.symbol in (SELECT DISTINCT symbol FROM tiingo_symbols)
+                WHERE f.symbol in (SELECT DISTINCT symbol FROM {config['tiingo']['symbols_table']})
                 ORDER BY f.symbol""").fetchall()
         msg = "Using Tiingo fundamentals meta file as the source of symbols. "
 

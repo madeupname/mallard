@@ -7,3 +7,6 @@
 /dataSources/
 /dataSources.local.xml
 !/dataSources.xml
+!/cody_history.xml
+!/sqlDataSources.xml
+!/jupyter-settings.xml

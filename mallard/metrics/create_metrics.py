@@ -95,16 +95,15 @@ def update_metrics():
     msg = f"Updating metrics: {daily_metrics}"
     print(msg)
     logger.info(msg)
-    # Get symbols to compile metrics on. We only care about symbols for which we have price and fundamental data.
+    # Get symbols to compile metrics on using EOD table.
     with duckdb.connect(db_file) as con:
         symbols_query = f"""
         SELECT DISTINCT vendor_symbol_id, symbol
-        FROM tiingo_eod
-        WHERE vendor_symbol_id IN (SELECT DISTINCT vendor_symbol_id FROM {fundamentals_reported_table})"""
+        FROM tiingo_eod"""
         symbol_ids = con.sql(symbols_query)
-        result = symbol_ids.fetchall()
+        eod_symbols = symbol_ids.fetchall()
 
-    vendor_symbol_ids = [row[0] for row in result]
+    vendor_symbol_ids = [row[0] for row in eod_symbols]
     duckdb_con = duckdb.connect(db_file)
     if 'adtval' in daily_metrics:
         msg = "Calculating avg_daily_trading_value..."
@@ -118,8 +117,8 @@ def update_metrics():
         msg = "Calculating MACD..."
         print(msg)
         logger.info(msg)
-        result = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
-        msg = f"MACD: Skipped {result['count_skip']}  Updated {result['count_success']}  Failed {result['count_fail']}"
+        eod_symbols = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
+        msg = f"MACD: Skipped {eod_symbols['count_skip']}  Updated {eod_symbols['count_success']}  Failed {eod_symbols['count_fail']}"
         print(msg)
         logger.info(msg)
 
