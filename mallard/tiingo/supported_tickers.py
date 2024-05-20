@@ -33,7 +33,10 @@ log_format = config['DEFAULT']['log_format']
 logging.basicConfig(filename=log_file, level=log_level, format=log_format)
 logger = logging.getLogger(__name__)
 
-logger.info(f"Downloading {supported_tickers_zip}")
+msg = f"Downloading {supported_tickers_zip}"
+logger.info(msg)
+print(msg)
+
 r = requests.get(supported_tickers_url)
 r.raise_for_status()
 with open(supported_tickers_zip, 'wb') as f:
@@ -42,11 +45,14 @@ with open(supported_tickers_zip, 'wb') as f:
 with zipfile.ZipFile(supported_tickers_zip, 'r') as zip_ref:
     zip_ref.extractall(tiingo_dir)
 
+tickers = duckdb.read_csv(supported_tickers_csv).filter('ticker IS NOT NULL')
+print("Extracted supported_tickers.csv")
+
 # Filter symbols per config
 ticker_requirements = config['DEFAULT']['ticker_requirements'].split(",")
-logger.info(f"Filtering tickers with requirements: {ticker_requirements}")
-
-tickers = duckdb.read_csv(supported_tickers_csv).filter('ticker IS NOT NULL')
+msg = f"Filtering tickers with requirements: {ticker_requirements}"
+print(msg)
+logger.info(msg)
 
 if ticker_requirements:
     if 'exchange' in ticker_requirements:
@@ -84,5 +90,5 @@ with duckdb.connect(db_file) as con:
             {col('start_date')},
             {col('end_date')}
       FROM latest_tickers)""")
-
+print("supported_tickers are loaded. Please verify with the examples/verification.ipynb notebook. Then run fundamentals.py")
 # Next step in filtering process is limiting to symbols with fundamental data: fundamentals.py
