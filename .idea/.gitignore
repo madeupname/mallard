@@ -6,7 +6,8 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
-!/dataSources.xml
-!/cody_history.xml
-!/sqlDataSources.xml
-!/jupyter-settings.xml
+/dataSources.xml
+/cody_history.xml
+/jupyter-settings.xml
+/sqlDataSources.xml
+/aws.xml
