@@ -6,3 +6,5 @@ SQLAlchemy>=2.0.27
 alembic>=1.13
 duckdb_engine>=0.12
 TA-Lib>=0.4
+yfinance>=0.2.37
+pyarrow>=15.0.0
