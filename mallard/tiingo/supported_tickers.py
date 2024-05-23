@@ -45,40 +45,37 @@ with open(supported_tickers_zip, 'wb') as f:
 with zipfile.ZipFile(supported_tickers_zip, 'r') as zip_ref:
     zip_ref.extractall(tiingo_dir)
 
-tickers = duckdb.read_csv(supported_tickers_csv).filter('ticker IS NOT NULL')
-print("Extracted supported_tickers.csv")
-
-# Filter symbols per config
-ticker_requirements = config['DEFAULT']['ticker_requirements'].split(",")
-msg = f"Filtering tickers with requirements: {ticker_requirements}"
-print(msg)
-logger.info(msg)
-
-if ticker_requirements:
-    if 'exchange' in ticker_requirements:
-        tickers = tickers.filter("exchange IS NOT NULL")
-    if 'stock' in ticker_requirements:
-        tickers = tickers.filter("assetType = 'Stock'")
-    if 'usd' in ticker_requirements:
-        tickers = tickers.filter("priceCurrency = 'USD'")
-    if 'dates' in ticker_requirements:
-        tickers = tickers.filter("startDate IS NOT NULL AND endDate IS NOT NULL")
-    if '6days' in ticker_requirements:
-        tickers = tickers.filter("endDate - startDate > 5")
-    if 'nocolon' in ticker_requirements:
-        tickers = tickers.filter("ticker NOT LIKE '%:%'")
-
 # Get ticker and endDate where there are more than 2 rows with the same ticker
 db_file = config['DEFAULT']['db_file']
 with duckdb.connect(db_file) as con:
+    tickers = con.read_csv(supported_tickers_csv).filter('ticker IS NOT NULL')
+    print("Extracted supported_tickers.csv")
+
+    # Filter symbols per config
+    ticker_requirements = config['DEFAULT']['ticker_requirements'].split(",")
+    msg = f"Filtering tickers with requirements: {ticker_requirements}"
+    print(msg)
+    logger.info(msg)
+
+    if ticker_requirements:
+        if 'exchange' in ticker_requirements:
+            tickers = tickers.filter("exchange IS NOT NULL")
+        if 'stock' in ticker_requirements:
+            tickers = tickers.filter("assetType = 'Stock'")
+        if 'usd' in ticker_requirements:
+            tickers = tickers.filter("priceCurrency = 'USD'")
+        if 'dates' in ticker_requirements:
+            tickers = tickers.filter("startDate IS NOT NULL AND endDate IS NOT NULL")
+        if '6days' in ticker_requirements:
+            tickers = tickers.filter("endDate - startDate > 5")
+        if 'nocolon' in ticker_requirements:
+            tickers = tickers.filter("ticker NOT LIKE '%:%'")
     # If there are multiple rows in tickers with the same value for ticker, we only want to keep the ones with the most
     # recent endDate column.
     # Create a query on the filtered tickers relation get distinct tickers with the most recent endDate
     latest_tickers = con.sql("SELECT DISTINCT ON(ticker) * FROM tickers ORDER BY ticker, endDate DESC")
-
-symbols_table = config['tiingo']['symbols_table']
-col = get_sql_column_provider('tiingo')
-with duckdb.connect(db_file) as con:
+    symbols_table = config['tiingo']['symbols_table']
+    col = get_sql_column_provider('tiingo')
     # Truncate symbols_table
     con.execute(f"DELETE FROM {symbols_table}")
     con.execute(f"""
@@ -90,5 +87,6 @@ with duckdb.connect(db_file) as con:
             {col('start_date')},
             {col('end_date')}
       FROM latest_tickers)""")
-print("supported_tickers are loaded. Please verify with the examples/verification.ipynb notebook. Then run fundamentals.py")
+print(
+    "supported_tickers are loaded. Please verify with the examples/verification.ipynb notebook. Then run fundamentals.py")
 # Next step in filtering process is limiting to symbols with fundamental data: fundamentals.py
