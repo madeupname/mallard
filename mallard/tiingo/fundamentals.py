@@ -159,8 +159,10 @@ def update_fundamentals(as_of, as_reported=False):
             {where}
             """
         symbol_ids = con.sql(symbols_query)
-        print(f"Downloading fundamentals for symbols:")
-        symbol_ids.count('vendor_symbol_id').show()
+        symbols_count = symbol_ids.count('vendor_symbol_id').fetchall()[0][0]
+        msg = f"Downloading {'reported' if as_reported else 'amended'} fundamentals for {symbols_count} symbols:"
+        print(msg)
+        logger.info(msg)
         result = symbol_ids.fetchall()
     count_success = 0
     count_fail = 0
@@ -182,6 +184,15 @@ def update_fundamentals(as_of, as_reported=False):
             except Exception as e:
                 print(f"Error processing {row}\n{e}")
                 count_fail += 1
+            # Print progress
+            if count_success % 100 == 0:
+                if as_reported:
+                    print(
+                        f"Reported fundamentals progress: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
+                else:
+                    print(
+                        f"Amended fundamentals progress: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
+
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             # Submit the tasks to the thread pool
@@ -200,13 +211,29 @@ def update_fundamentals(as_of, as_reported=False):
                 except Exception as e:
                     print(f"Error processing {row}\n{e}")
                     count_fail += 1
+                # Print progress
+                if count_success % 100 == 0:
+                    if as_reported:
+                        print(
+                            f"Reported fundamentals progress: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
+                    else:
+                        print(
+                            f"Amended fundamentals progress: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
+
     duckdb_con.close()
     # Save the update timestamp
     update_dir = fundamentals_reported_dir if as_reported else fundamentals_amended_dir
     last_update_file = os.path.join(update_dir, 'fundamentals_last_updated.txt')
     with open(last_update_file, 'w') as f:
         f.write(update_timestamp.isoformat())
-    logger.info(f"Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
+    if as_reported:
+        msg = f"Reported fundamentals finished: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}"
+        logger.info(msg)
+        print(msg)
+    else:
+        msg = f"Amended fundamentals finished: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}"
+        logger.info(msg)
+        print(msg)
 
 
 def get_last_update(as_reported=False):

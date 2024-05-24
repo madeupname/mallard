@@ -115,6 +115,7 @@ msg += f"Processing {len(result)} symbols as required. "
 print(msg)
 logger.info(msg)
 
+
 def load_from_file(file_name, duckdb_con):
     """This is a utility function you can use if you already have downloaded price files."""
     # file_name format is `{symbol}_{vendor_symbol_id}_daily.csv`. Split to retrieve those variables.
@@ -168,12 +169,12 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             r = requests.get(url)
         r.raise_for_status()
         data = r.content
-        if r.content is None or r.content.startswith(b'[]'):
+        if not data or not data.startswith(
+                b'date,close,high,low,open,volume,adjClose,adjHigh,adjLow,adjOpen,adjVolume,divCash,splitFactor'):
             quarantine_data(symbol, vendor_symbol_id, is_active, data)
             return 'fail'
         data_without_header = r.content.split(b'\n', 1)[1]
-        if not data_without_header or not data.startswith(
-                b'date,close,high,low,open,volume,adjClose,adjHigh,adjLow,adjOpen,adjVolume,divCash,splitFactor'):
+        if not data_without_header:
             if not is_append:
                 quarantine_data(symbol, vendor_symbol_id, is_active, data)
                 return 'fail'
@@ -238,6 +239,7 @@ workers = int(config['DEFAULT']['threads'])
 os.environ['NUMEXPR_MAX_THREADS'] = str(workers)
 duckdb_con = duckdb.connect(db_file)
 
+# If workers is 1, use a for loop to process the symbols. This is useful for debugging.
 if workers == 1:
     for row in result:
         symbol = row[0]
@@ -263,7 +265,13 @@ if workers == 1:
         # Print status every 500 symbols
         total = count_skip + count_new + count_update + count_fail
         if total > 0 and total % 500 == 0:
-            print(f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+            print(
+                f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+            if count_fail == total:
+                msg = "Everything failed. Check API key and config.ini for issues. Exiting."
+                print(msg)
+                logger.error(msg)
+                exit(1)
 else:
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # Submit the tasks to the thread pool
@@ -300,8 +308,15 @@ else:
             # Print status every 500 symbols
             total = count_skip + count_new + count_update + count_fail
             if total > 0 and total % 500 == 0:
-                print(f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
-
+                print(
+                    f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+                if count_fail == total:
+                    msg = "Everything failed. Check API key and config.ini for issues. Exiting."
+                    print(msg)
+                    logger.error(msg)
+                    exit(1)
 
 duckdb_con.close()
-logger.info(f"EOD update complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+msg = f"EOD update complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}"
+print(msg)
+logger.info(msg)
