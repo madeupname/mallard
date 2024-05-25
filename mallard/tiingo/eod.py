@@ -3,6 +3,7 @@ import concurrent
 import configparser
 import logging
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, datetime, date
 from io import StringIO
@@ -27,10 +28,26 @@ logging.basicConfig(filename=config['DEFAULT']['log_file'], level=config['DEFAUL
                     format=config['DEFAULT']['log_format'])
 
 db_file = config['DEFAULT']['db_file']
+file_type = 'daily'
 
 msg = f"Updating Tiingo EOD data. Using database {db_file}. "
 print(msg)
 logger.info(msg)
+
+# Global flag to indicate shutdown
+shutdown_flag = False
+
+
+def signal_handler(signal, frame):
+    global shutdown_flag
+    print('Signal received, shutting down.')
+    shutdown_flag = True
+
+
+# Register signal handler
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGBREAK, signal_handler)
 
 
 def is_valid_eod_file(sym: str, file_path: str, duckdb_con):
@@ -152,6 +169,9 @@ def load_from_file(file_name, duckdb_con):
 def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_active=None):
     """Update the price history of the given symbol, dates, and existing history.
     Updates both the file and the database."""
+    if shutdown_flag:
+        return 'skip'
+
     try:
         # We append an identifier to the file name to differentiate it in exclude and quarantine directories.
         # It also allows you to open different data files for the same symbol in Excel at once.
@@ -171,12 +191,12 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         data = r.content
         if not data or not data.startswith(
                 b'date,close,high,low,open,volume,adjClose,adjHigh,adjLow,adjOpen,adjVolume,divCash,splitFactor'):
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
         data_without_header = r.content.split(b'\n', 1)[1]
         if not data_without_header:
             if not is_append:
-                quarantine_data(symbol, vendor_symbol_id, is_active, data)
+                quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
                 return 'fail'
             # If we're updating, there's a good chance the start date falls on a weekend and there legitimately
             # isn't any data to fetch.
@@ -211,7 +231,7 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             exit(1)
         except Exception as e:
             print(f"Error inserting {symbol} into EOD table\n{e}")
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
         if is_append:
             mode = 'ab'

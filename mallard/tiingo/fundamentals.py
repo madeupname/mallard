@@ -10,6 +10,7 @@ NOTE: This table is recreated from scratch every time.
 import concurrent
 import configparser
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import StringIO
@@ -28,6 +29,21 @@ config = configparser.ConfigParser()
 config.read(config_file)
 
 db_file = config['DEFAULT']['db_file']
+
+# Global flag to indicate shutdown
+shutdown_flag = False
+
+
+def signal_handler(signal, frame):
+    global shutdown_flag
+    print('Signal received, shutting down.')
+    shutdown_flag = True
+
+
+# Register signal handler
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGBREAK, signal_handler)
 
 # Download fundamentals meta CSV, which is mostly a company file, but has update timestamps for their statement and
 # daily meta endpoints.
@@ -93,7 +109,11 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
     """Update the fundamentals for the given symbol. If fundamentals have been updated, we have no idea if a new
     statement was added or a previous one was amended, so we download and replace everything. Updates both the file and
     the database."""
+    if shutdown_flag:
+        return 'skip'
+
     data = None
+    file_type = 'fundamentals_reported' if as_reported else 'fundamentals_amended'
     try:
         if as_reported:
             fundamentals_table = config['tiingo']['fundamentals_reported_table']
@@ -114,11 +134,11 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         # Check if data is None, is empty, or is equivalent to the string '[]'
         if not data or data == b'[]' or not data.startswith(
                 b'date,year,quarter,statementType,dataCode,value'):
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
         data_without_header = data.split(b'\n', 1)[1]
         if not data_without_header:
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
         # Create a DataFrame from the CSV data and rename the columns to match the EOD table
         df = pl.read_csv(StringIO(data.decode('utf-8')))
@@ -126,7 +146,7 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
     except Exception as e:
         print(f"Error reading CSV for {vendor_symbol_id} / {symbol}: {e}")
         if data is not None:
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
         return 'fail'
     # Insert the data into the table
     try:
@@ -139,7 +159,7 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         exit(1)
     except Exception as e:
         print(f"Error inserting data for {vendor_symbol_id} / {symbol}: {e}")
-        quarantine_data(symbol, vendor_symbol_id, is_active, data)
+        quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
         return 'fail'
     # Save the CSV file
     update_dir = fundamentals_reported_dir if as_reported else fundamentals_amended_dir

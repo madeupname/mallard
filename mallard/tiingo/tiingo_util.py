@@ -32,9 +32,9 @@ def quarantine_file(symbol, file_name, is_active=False):
     logger.error(error)
 
 
-def quarantine_data(symbol, vendor_symbol_id, is_active, data):
+def quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type):
     """Save the data as a file in the appropriate directory per is_active."""
     target_dir = quarantine_dir if is_active else exclude_dir
-    with open(os.path.join(target_dir, f"{symbol}_{vendor_symbol_id}_daily.csv"), 'wb') as f:
+    with open(os.path.join(target_dir, f"{symbol}_{vendor_symbol_id}_{file_type}.csv"), 'wb') as f:
         f.write(data)
     logger.error(f"{symbol}: No data returned or incorrect format. Moving to {target_dir}.")

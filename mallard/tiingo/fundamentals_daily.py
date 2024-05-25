@@ -5,7 +5,9 @@ Must be run after fundamentals.py, which loads fundamentals meta file.
 
 import concurrent
 import configparser
+import datetime
 import os
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from io import StringIO
@@ -29,6 +31,21 @@ if not config.getboolean('tiingo', 'has_fundamentals_addon'):
 
 db_file = config['DEFAULT']['db_file']
 
+# Global flag to indicate shutdown
+shutdown_flag = False
+
+
+def signal_handler(signal, frame):
+    global shutdown_flag
+    print('Signal received, shutting down.')
+    shutdown_flag = True
+
+
+# Register signal handler
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGBREAK, signal_handler)
+
 fundamentals_daily_dir = os.path.join(config['tiingo']['dir'], 'fundamentals/daily')
 os.makedirs(fundamentals_daily_dir, exist_ok=True)
 exclude_dir = config['tiingo']['dir'] + '/exclude'
@@ -46,7 +63,7 @@ count_fail = 0
 # Also uses symbols table to capture filters used on that data, like minimum lifespan.
 with duckdb.connect(db_file, read_only=True) as con:
     result = con.execute(f"""
-            SELECT f.symbol, e.max_date, f.vendor_symbol_id, f.is_active
+            SELECT f.symbol, e.max_date, f.vendor_symbol_id, f.is_active, f.daily_last_updated
             FROM {config['tiingo']['fundamentals_meta_table']} f
             LEFT JOIN (
                 SELECT vendor_symbol_id, MAX(date) AS max_date
@@ -60,6 +77,10 @@ with duckdb.connect(db_file, read_only=True) as con:
 def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_active=None):
     """Update the daily fundamental metrics of the given symbol, dates, and existing history.
     Updates both the file and the database."""
+    if shutdown_flag:
+        return 'skip'
+
+    file_type = 'fundamentals_daily'
     try:
         # We append an identifier to the file name to differentiate it in exclude and quarantine directories.
         # It also allows you to open different data files for the same symbol in Excel at once.
@@ -81,14 +102,14 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         data = r.content
         # Tiingo will literally return the word "None" in some cases, usually when there is no data after a date because
         # the symbol is inactive. It may also be blank or [] - it's not consistent across APIs.
-        if not r.content or r.content.startswith(b'None') or r.content.startswith(b'[]'):
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
-            return 'fail'
-        data_without_header = r.content.split(b'\n', 1)[1]
-        if not data_without_header or not data.startswith(
+        if not data or not data.startswith(
                 b'date,marketCap,enterpriseVal,peRatio,pbRatio,trailingPEG1Y'):
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
+            return 'fail'
+        data_without_header = data.split(b'\n', 1)[1]
+        if not data_without_header:
             if not is_append:
-                quarantine_data(symbol, vendor_symbol_id, is_active, data)
+                quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
                 return 'fail'
             # If we're updating, there's a good chance the start date falls on a weekend and there legitimately
             # isn't any data to fetch.
@@ -113,7 +134,7 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             exit(1)
         except Exception as e:
             logger.error(f"Error inserting {symbol} into EOD table\n{e}")
-            quarantine_data(symbol, vendor_symbol_id, is_active, data)
+            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
         if is_append:
             mode = 'ab'
@@ -152,7 +173,11 @@ if workers == 1:
         db_end_date = row[1]
         vendor_symbol_id = row[2]
         is_active = row[3]
-        start_date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+        daily_last_updated: datetime.datetime = row[4]
+        start_date: datetime.date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+        if db_end_date and daily_last_updated and start_date > daily_last_updated.date():
+            count_skip += 1
+            continue
         update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id, is_active)
 else:
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -163,7 +188,15 @@ else:
             db_end_date = row[1]
             vendor_symbol_id = row[2]
             is_active = row[3]
-            start_date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+            daily_last_updated: datetime.datetime = row[4]
+            start_date: datetime.date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+            try:
+                if db_end_date and daily_last_updated and start_date > daily_last_updated.date():
+                    count_skip += 1
+                    continue
+            except Exception as e:
+                print(f"Error processing {row}\n{e}")
+                exit(1)
             futures[executor.submit(update_symbol, symbol, start_date, duckdb_con, vendor_symbol_id, is_active)] = row
 
         for future in concurrent.futures.as_completed(futures):
