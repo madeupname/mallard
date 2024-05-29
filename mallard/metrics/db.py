@@ -13,6 +13,7 @@ config.read(config_file)
 # Get the path to the database file
 db_file = config['DEFAULT']['db_file']
 metrics = config['tiingo']['metrics'].split(",")
+fundamental_metrics_table = config['tiingo']['fundamental_metrics_table']
 
 with duckdb.connect(db_file) as con:
     # Create daily_metrics table with primary key on vendor_symbol_id and date
@@ -25,12 +26,15 @@ with duckdb.connect(db_file) as con:
         PRIMARY KEY (vendor_symbol_id, date))    
     """)
     # Create fundamental_metrics table with primary key on vendor_symbol_id and date
+    # This is structured like the Tiingo reported and fundamentals tables.
     print("Creating fundamental_metrics table if it doesn't exist.")
-    con.execute("""
-    CREATE TABLE IF NOT EXISTS fundamental_metrics (
+    con.execute(f"""
+    CREATE TABLE IF NOT EXISTS {fundamental_metrics_table} (
         vendor_symbol_id VARCHAR,
         symbol VARCHAR,
         date DATE,
+        year INT,
+        quarter INT,
         metric VARCHAR,
         value DOUBLE,
         PRIMARY KEY (vendor_symbol_id, date, metric))

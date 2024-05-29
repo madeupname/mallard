@@ -10,6 +10,7 @@ from datetime import datetime
 import duckdb
 
 from mallard.metrics.daily_metrics import update_macd, avg_daily_trading_value
+from mallard.metrics.fundamental_metrics import calculate_ttm, roic, nopat
 from mallard.tiingo.tiingo_util import logger
 
 # Get config file
@@ -119,6 +120,29 @@ def update_metrics():
         logger.info(msg)
         eod_symbols = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
         msg = f"MACD: Skipped {eod_symbols['count_skip']}  Updated {eod_symbols['count_success']}  Failed {eod_symbols['count_fail']}"
+        print(msg)
+        logger.info(msg)
+    if 'roic' in daily_metrics:
+        msg = "Calculating ROIC (roic) with dependencies EBIT TTM, tax expense TTM, adjusted for backtesting."
+        print(msg)
+        logger.info(msg)
+        msg = "Calculating EBIT TTM."
+        print(msg)
+        logger.info(msg)
+        calculate_ttm("ebit", duckdb_con)
+        msg = "Calculating tax expense TTM."
+        print(msg)
+        logger.info(msg)
+        calculate_ttm("taxExp", duckdb_con)
+        msg = "Calculating NOPAT."
+        print(msg)
+        logger.info(msg)
+        nopat(duckdb_con)
+        msg = "Calculating ROIC for backtesting."
+        print(msg)
+        logger.info(msg)
+        roic(duckdb_con)
+        msg = f"ROIC backtesting metric complete"
         print(msg)
         logger.info(msg)
 

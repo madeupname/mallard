@@ -53,10 +53,15 @@ meta_url = config['tiingo']['fundamentals_meta_url'] + "?format=csv&token=" + co
 response = requests.get(meta_url)
 with open(meta_csv, 'wb') as f:
     f.write(response.content)
+
+fundamentals_meta_table = config['tiingo']['fundamentals_meta_table']
+fundamentals_amended_distinct_table = config['tiingo']['fundamentals_amended_distinct_table']
+fundamentals_amended_table = config['tiingo']['fundamentals_amended_table']
+
 # Truncate fundamentals meta table
-print(f"Truncating {config['tiingo']['fundamentals_meta_table']}")
+print(f"Truncating {fundamentals_meta_table}")
 with duckdb.connect(db_file) as con:
-    con.execute(f"DELETE FROM {config['tiingo']['fundamentals_meta_table']}")
+    con.execute(f"DELETE FROM {fundamentals_meta_table}")
 
 # Store the fundamentals meta CSV file in its own table. We use normalized column names in the table.
 # If the user doesn't have the fundamentals addon, we leave out columns with warnings instead of data.
@@ -78,28 +83,28 @@ else:
         {col('reporting_currency')}, {col('statement_last_updated')}, {col('daily_last_updated')} 
         FROM read_csv('{meta_csv}', header=true)
         {where}"""
-print(f"Loading {config['tiingo']['fundamentals_meta_table']} with query:\n{select_query}")
+print(f"Loading {fundamentals_meta_table} with query:\n{select_query}")
 with duckdb.connect(db_file) as con:
     con.execute(f"""
-        INSERT INTO {config['tiingo']['fundamentals_meta_table']} BY NAME
+        INSERT INTO {fundamentals_meta_table} BY NAME
         {select_query}
         """)
     # Convert symbol column to uppercase
     con.execute(f"""
-        UPDATE {config['tiingo']['fundamentals_meta_table']} SET symbol = UPPER(symbol), reporting_currency = UPPER(reporting_currency)
+        UPDATE {fundamentals_meta_table} SET symbol = UPPER(symbol), reporting_currency = UPPER(reporting_currency)
         """)
-    print(f"Rows in {config['tiingo']['fundamentals_meta_table']}:")
-    con.sql(f"SELECT COUNT(symbol) FROM {config['tiingo']['fundamentals_meta_table']}").show()
+    print(f"Rows in {fundamentals_meta_table}:")
+    con.sql(f"SELECT COUNT(symbol) FROM {fundamentals_meta_table}").show()
 
 # Delete rows from symbols table if symbol not in fundamentals meta table (if configured).
 ticker_requirements = config["DEFAULT"]["ticker_requirements"].split(",")
 if "fundamentals" in ticker_requirements:
     with duckdb.connect(db_file) as con:
         print(
-            f"Deleting rows in {config['tiingo']['symbols_table']} that aren't in {config['tiingo']['fundamentals_meta_table']}. Current count:")
+            f"Deleting rows in {config['tiingo']['symbols_table']} that aren't in {fundamentals_meta_table}. Current count:")
         con.sql(f"SELECT COUNT(symbol) FROM {config['tiingo']['symbols_table']}").show()
         con.execute(f"""
-            DELETE FROM {config['tiingo']['symbols_table']} WHERE symbol NOT IN (SELECT UPPER(symbol) FROM {config['tiingo']['fundamentals_meta_table']})
+            DELETE FROM {config['tiingo']['symbols_table']} WHERE symbol NOT IN (SELECT UPPER(symbol) FROM {fundamentals_meta_table})
             """)
         print(f"{config['tiingo']['symbols_table']} new row count:")
         con.sql(f"SELECT COUNT(symbol) FROM {config['tiingo']['symbols_table']}").show()
@@ -175,7 +180,7 @@ def update_fundamentals(as_of, as_reported=False):
     where = f"WHERE statement_last_updated > '{last_update}'" if last_update else ""
     with duckdb.connect(db_file) as con:
         symbols_query = f"""
-            SELECT vendor_symbol_id, symbol, is_active FROM {config['tiingo']['fundamentals_meta_table']}
+            SELECT vendor_symbol_id, symbol, is_active FROM {fundamentals_meta_table}
             {where}
             """
         symbol_ids = con.sql(symbols_query)
@@ -271,9 +276,12 @@ def create_fundamentals_amended_distinct():
     """In tiingo_fundamentals_amended, some quarters have multiple filings on different dates.
      In addition, those filings might have different statements or fields (dataCode).
      This query combines those separate filings into one, taking the most recent distinct dataCode in each quarter."""
+    msg = f"Creating {fundamentals_amended_distinct_table} table which has the latest data for each field per quarter."
+    print(msg)
+    logger.info(msg)
     with duckdb.connect(db_file) as con:
         con.execute(f"""
-        CREATE OR REPLACE TABLE tiingo_fundamentals_amended_distinct AS
+        CREATE OR REPLACE TABLE {fundamentals_amended_distinct_table} AS
         SELECT
             vendor_symbol_id,
             symbol,
@@ -289,7 +297,7 @@ def create_fundamentals_amended_distinct():
                        PARTITION BY vendor_symbol_id, year, quarter, dataCode
                        ORDER BY date DESC
                    ) as rn
-            FROM tiingo_fundamentals_amended
+            FROM {fundamentals_amended_table}
         ) sub
         WHERE rn = 1;
         """)
@@ -314,3 +322,8 @@ if config.getboolean('tiingo', 'has_fundamentals_addon'):
     # Update reported fundamentals
     last_update = get_last_update(True)
     update_fundamentals(last_update, as_reported=True)
+
+    # Create a distinct table for amended fundamentals if roic in metrics list
+    if 'roic' in config['tiingo']['metrics'].split(","):
+        create_fundamentals_amended_distinct()
+
