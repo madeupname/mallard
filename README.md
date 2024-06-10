@@ -18,7 +18,7 @@ Disclaimer: I am not associated with any vendor or project used by Mallard.
 
 ## Installation and Configuration
 Decide where your data directory will be. It will hold all files from data providers and the database, so expect it to
-be ~6GB assuming you're getting the full dataset of price and fundamentals. That's with the quality filters enabled.
+be >10GB assuming you're getting the full dataset of price and fundamentals. That's with the quality filters enabled.
 Mine with various metrics generated is currently 10GB.
 
 Copy `example_config.ini` to your data directory and edit it as needed. Must add your Tiingo API token.
@@ -48,12 +48,14 @@ This gets all data you're eligible for. Since it runs multithreaded, it will hit
 Tiingo unless you're on a very slow connection. It uses a rate limiter to prevent rejections, but overall it will take
 4-5 hours to get all data assuming you have the largest fundamentals addon.
 
-To check if it's working, see the Jupyter notebook verification.ipynb. You can run the appropriate block after each 
+**Note:** The script may look "stuck" after 9,000 symbols processed, but this is the rate limiter doing its job. 
+
+To check if it's working, see the Jupyter notebook verification.ipynb. You should run the appropriate block after each 
 command to verify the data was correctly download. Also make sure you're checking your mallard.log.
 
 ### Updates
 Mallard tries to be efficient with updates. For EOD and "fundamentals daily" endpoints, if there is already data
-downloaded for a symbol, it downloads just the missing data and append it to the existing file. If you run on 
+downloaded for a symbol, it downloads just the missing data and appends it to the existing file. If you run on 
 a weekend or holiday, or immediately after a run, there may be no data to download and the update is skipped.
 
 There are some exceptions. When updating EOD data, if we discover an entry in dividend or split columns, we have to
@@ -68,9 +70,9 @@ quarantine so it's skipped upon subsequent updates. This can be improved if Tiin
 with permaTicker. Even going by active status, I can't know if your last download was before it went inactive and if
 you got all the data, so I play it safe.
 
-Keep in mind there is no feed for finding out when data for a symbol was fixed. I've yet to see a data provider announce
-they had bad data and an update was required. The only solution is to regularly delete your whole working directory and
-database and start over. It's up to you how often you want to do that.
+Keep in mind there is no feed for finding out when data for a symbol was corrected. I've yet to see a data provider
+announce they had bad data and an update was required. The only solution is to regularly delete your whole working
+directory and database and start over. It's up to you and your plan how often you want to do that.
 
 ## Metrics
 Tiingo provides [a few metrics](https://www.tiingo.com/documentation/fundamentals), which are stored in the 
@@ -85,13 +87,14 @@ welcome:
   * The current recommendation is $20M per day, so we also create an inflation rate table to adjust this for previous years. The rates are from the US government (FRED). 
 * MACD
   * Standard 12, 26, 9 period.
+* ROIC and NOPAT
+  * NOPAT is straightforward, but ROIC is a best-effort attempt using Aswath Damodaran's forumula. Keep in mind an analyst would be going through the earnings reports and manipulating the balance sheet to get both as accurate as possible. Probably why Yahoo Finance and Fidelity don't even bother providing it.
 
 ## Data Management
 If you keep all the default filters for symbols, you still get a large amount of data:
 
 * 32M rows end of day price data, growing at over 6,500 rows per day
-* 58M rows of fundamentals data, growing at 520K rows per quarter
-* Double the fundamental data because you get reported and amended.
+* ~1.5M rows of fundamentals data, which grows quarterly but is >80 columns wide
 
 Because the value of many fields like adjusted prices can be very high or very low, we store them as double, which is
 half the decimal equivalent but still 8 bytes per field. So if you want to calculate metrics over the entire price
@@ -117,6 +120,8 @@ have a `tiingo_symbols` table and not a `symbols` table.
 However, we follow OpenBB and Finance Toolkit's lead of minimally normalizing things like column names. So even though
 it's a Tiingo table, we call it symbol and not ticker. We also use snake case instead of camel case. `normalization.py`
 holds a simple translation dictionary. This follows the principle of Ubiquitous Language.
+
+Note: the exception are fundamentals columns since there are >80. They are kept as is to simplify code and updates.
 
 ## Tiingo
 Note: this code assumes you have a paid subscription to Tiingo as that is required for the whole-market dataset that
@@ -231,4 +236,3 @@ I briefly looked into downloading their company symbol and exchanges files but t
 I sincerely appreciate this honesty, but it makes those files worthless. It makes more sense to use Tiingo's
 fundamentals metadata instead, since that's what you're downloading anyway.
 
-I plan to get a subscription to sec-api.io, but for shares outstanding, insider trades, etc.  

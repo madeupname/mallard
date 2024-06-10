@@ -18,6 +18,7 @@ from io import StringIO
 import duckdb
 import polars as pl
 import requests
+from polars import DataFrame
 
 from mallard.RateLimiterContext import RateLimiterContext
 from mallard.normalization import get_sql_column_provider
@@ -145,9 +146,15 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         if not data_without_header:
             quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
             return 'fail'
-        # Create a DataFrame from the CSV data and rename the columns to match the EOD table
+        # Create a DataFrame from the CSV data and add the vendor_symbol_id and symbol columns.
         df = pl.read_csv(StringIO(data.decode('utf-8')))
         df = df.with_columns([pl.lit(vendor_symbol_id).alias('vendor_symbol_id'), pl.lit(symbol).alias('symbol')])
+        # Convert/pivot the DataFrame from long to wide format
+        df_wide = df.pivot(
+            index=["date", "year", "quarter", "vendor_symbol_id", "symbol"],
+            columns="dataCode",
+            values="value"
+        )
     except Exception as e:
         print(f"Error reading CSV for {vendor_symbol_id} / {symbol}: {e}")
         if data is not None:
@@ -158,7 +165,7 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         with duckdb_con.cursor() as local_con:
             # Delete existing rows for this vendor_symbol_id
             local_con.execute(f"DELETE FROM {fundamentals_table} WHERE vendor_symbol_id = '{vendor_symbol_id}'")
-            local_con.execute(f"INSERT INTO {fundamentals_table} BY NAME FROM df")
+            local_con.execute(f"INSERT INTO {fundamentals_table} BY NAME FROM df_wide")
     except duckdb.ConnectionException as e:
         print(f"Can't connect to DB, exiting. Error:\n{e}")
         exit(1)
@@ -273,34 +280,42 @@ def get_last_update(as_reported=False):
 
 
 def create_fundamentals_amended_distinct():
-    """In tiingo_fundamentals_amended, some quarters have multiple filings on different dates.
-     In addition, those filings might have different statements or fields (dataCode).
-     This query combines those separate filings into one, taking the most recent distinct dataCode in each quarter."""
-    msg = f"Creating {fundamentals_amended_distinct_table} table which has the latest data for each field per quarter."
+    """Creates a table that combines multiple filings per quarter into one, taking the most recent data for each field."""
+    msg = "Creating the table with the latest data for each field per quarter."
     print(msg)
     logger.info(msg)
+    df = forward_fill_metrics_table(fundamentals_amended_table)
+
+    # List of metric columns, excluding identifier and time columns
+    column_names = [col for col in df.columns if col not in ("vendor_symbol_id", "symbol", "date", "year", "quarter")]
+
+    # Group by the key columns and aggregate using the last non-null value for each of the columns
+    df_result = df.group_by(["vendor_symbol_id", "year", "quarter"]).agg(
+        [pl.col("symbol").last().alias("symbol"),
+         pl.col("date").last().alias("date")] +
+        [pl.col(column).last().alias(column) for column in column_names]
+    )
+
     with duckdb.connect(db_file) as con:
-        con.execute(f"""
-        CREATE OR REPLACE TABLE {fundamentals_amended_distinct_table} AS
-        SELECT
-            vendor_symbol_id,
-            symbol,
-            date,
-            year,
-            quarter,
-            statementType,
-            dataCode,
-            value
-        FROM (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY vendor_symbol_id, year, quarter, dataCode
-                       ORDER BY date DESC
-                   ) as rn
-            FROM {fundamentals_amended_table}
-        ) sub
-        WHERE rn = 1;
-        """)
+        con.execute(f"CREATE OR REPLACE TABLE {fundamentals_amended_distinct_table} AS SELECT * FROM df_result")
+
+
+def forward_fill_metrics_table(table) -> DataFrame:
+    """Takes a table name with metrics columns, such as the fundamentals tables, and does a forward fill on null
+    values."""
+    with duckdb.connect(db_file) as con:
+        df = con.sql(
+            f"SELECT * FROM {fundamentals_amended_table} ORDER BY vendor_symbol_id, year, quarter, date").pl()
+
+    # List of metric columns, excluding identifier and time columns
+    column_names = [col for col in df.columns if
+                    col not in ("vendor_symbol_id", "symbol", "date", "year", "quarter")]
+
+    # Apply forward fill directly on each metric column
+    return df.with_columns(
+        [pl.col(column).forward_fill().over(["vendor_symbol_id", "year", "quarter"]).alias(column)
+         for column in column_names]
+    )
 
 
 # Download fundamentals (financial statements)
@@ -326,4 +341,3 @@ if config.getboolean('tiingo', 'has_fundamentals_addon'):
     # Create a distinct table for amended fundamentals if roic in metrics list
     if 'roic' in config['tiingo']['metrics'].split(","):
         create_fundamentals_amended_distinct()
-

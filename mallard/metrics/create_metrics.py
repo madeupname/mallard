@@ -123,7 +123,7 @@ def update_metrics():
         print(msg)
         logger.info(msg)
     if 'roic' in daily_metrics:
-        msg = "Calculating ROIC (roic) with dependencies EBIT TTM, tax expense TTM, adjusted for backtesting."
+        msg = "Calculating ROIC (roic) with dependencies EBIT TTM, tax expense TTM, and NOPAT."
         print(msg)
         logger.info(msg)
         msg = "Calculating EBIT TTM."
@@ -138,7 +138,7 @@ def update_metrics():
         print(msg)
         logger.info(msg)
         nopat(duckdb_con)
-        msg = "Calculating ROIC for backtesting."
+        msg = "Calculating ROIC."
         print(msg)
         logger.info(msg)
         roic(duckdb_con)

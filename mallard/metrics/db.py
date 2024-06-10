@@ -29,15 +29,13 @@ with duckdb.connect(db_file) as con:
     # This is structured like the Tiingo reported and fundamentals tables.
     print("Creating fundamental_metrics table if it doesn't exist.")
     con.execute(f"""
-    CREATE TABLE IF NOT EXISTS {fundamental_metrics_table} (
+    CREATE OR REPLACE TABLE {fundamental_metrics_table} (
         vendor_symbol_id VARCHAR,
         symbol VARCHAR,
         date DATE,
         year INT,
         quarter INT,
-        metric VARCHAR,
-        value DOUBLE,
-        PRIMARY KEY (vendor_symbol_id, date, metric))
+        PRIMARY KEY (vendor_symbol_id, date, year, quarter))
     """)
     # Get the directory this file is in.
     if 'adtval' in metrics:
@@ -51,3 +49,9 @@ with duckdb.connect(db_file) as con:
         con.execute(f"ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS macd DOUBLE")
         con.execute(f"ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS macd_signal DOUBLE")
         con.execute(f"ALTER TABLE daily_metrics ADD COLUMN IF NOT EXISTS macd_hist DOUBLE")
+    if 'roic' in metrics:
+        print("Creating columns in fundamental metrics for ROIC if they don't exist.")
+        con.execute(f"ALTER TABLE {fundamental_metrics_table} ADD COLUMN IF NOT EXISTS ebit_ttm DOUBLE")
+        con.execute(f"ALTER TABLE {fundamental_metrics_table} ADD COLUMN IF NOT EXISTS taxExp_ttm DOUBLE")
+        con.execute(f"ALTER TABLE {fundamental_metrics_table} ADD COLUMN IF NOT EXISTS nopat DOUBLE")
+        con.execute(f"ALTER TABLE {fundamental_metrics_table} ADD COLUMN IF NOT EXISTS roic DOUBLE")
