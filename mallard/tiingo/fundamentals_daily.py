@@ -8,6 +8,7 @@ import configparser
 import datetime
 import os
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from io import StringIO
@@ -44,7 +45,8 @@ def signal_handler(signal, frame):
 # Register signal handler
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGBREAK, signal_handler)
+if sys.platform == 'win32':
+    signal.signal(signal.SIGBREAK, signal_handler)
 
 fundamentals_daily_dir = os.path.join(config['tiingo']['dir'], 'fundamentals/daily')
 os.makedirs(fundamentals_daily_dir, exist_ok=True)

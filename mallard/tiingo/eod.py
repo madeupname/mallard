@@ -4,6 +4,7 @@ import configparser
 import logging
 import os
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, datetime, date
 from io import StringIO
@@ -44,10 +45,12 @@ def signal_handler(signal, frame):
     shutdown_flag = True
 
 
+if sys.platform == 'win32':
+    signal.signal(signal.SIGBREAK, signal_handler)
+
 # Register signal handler
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGBREAK, signal_handler)
 
 
 def is_valid_eod_file(sym: str, file_path: str, duckdb_con):

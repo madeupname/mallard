@@ -11,6 +11,7 @@ import concurrent
 import configparser
 import os
 import signal
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import StringIO
@@ -44,7 +45,8 @@ def signal_handler(signal, frame):
 # Register signal handler
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGBREAK, signal_handler)
+if sys.platform == 'win32':
+    signal.signal(signal.SIGBREAK, signal_handler)
 
 # Download fundamentals meta CSV, which is mostly a company file, but has update timestamps for their statement and
 # daily meta endpoints.
