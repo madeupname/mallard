@@ -125,6 +125,26 @@ def wide_from_long_query(table, metric_column):
     GROUP BY vendor_symbol_id, symbol, date, year, quarter;""")
 
 
+def table_exists(con, table: str) -> bool:
+    """Check if a table exists in the DuckDB database using SHOW TABLES."""
+    tables = con.execute("SHOW TABLES").fetchall()
+    return (table,) in tables
+
+
+def convert_table(con, table: str) -> None:
+    if table_exists(con, table):
+        msg = f"Converting {table} from long to wide schema."
+        print(msg)
+        query = wide_from_long_query(table, 'dataCode')
+        con.execute(query)
+        query = sa.text(f"DROP TABLE {table}")
+        con.execute(query)
+        query = sa.text(f"ALTER TABLE {table + '_wide'} RENAME TO {table}")
+        con.execute(query)
+        msg = f"Conversion complete for {table}."
+        print(msg)
+
+
 def upgrade() -> None:
     fundamentals_amended_table = mallard_config['tiingo']['fundamentals_amended_table']
     fundamentals_reported_table = mallard_config['tiingo']['fundamentals_reported_table']
@@ -132,40 +152,10 @@ def upgrade() -> None:
     # Get connection from Alembic
     conn = op.get_bind()
     # for table in [fundamentals_amended_table, fundamentals_reported_table, fundamental_metrics_table]:
-    msg = f"Converting {fundamentals_amended_table} from long to wide schema."
-    print(msg)
-    query = wide_from_long_query(fundamentals_amended_table, 'dataCode')
-    print(query)
-    conn.execute(query)
-    query = sa.text(f"DROP TABLE {fundamentals_amended_table}")
-    conn.execute(query)
-    query = sa.text(f"ALTER TABLE {fundamentals_amended_table + '_wide'} RENAME TO {fundamentals_amended_table}")
-    conn.execute(query)
-    msg = f"Conversion complete for {fundamentals_amended_table}."
-    print(msg)
-
-    msg = f"Converting {fundamentals_reported_table} from long to wide schema."
-    print(msg)
-    query = wide_from_long_query(fundamentals_reported_table, 'dataCode')
-    print(query)
-    conn.execute(query)
-    query = sa.text(f"DROP TABLE {fundamentals_reported_table}")
-    conn.execute(query)
-    query = sa.text(f"ALTER TABLE {fundamentals_reported_table + '_wide'} RENAME TO {fundamentals_reported_table}")
-    conn.execute(query)
-    msg = f"Conversion complete for {fundamentals_reported_table}."
-    print(msg)
-
-    msg = f"Converting {fundamental_metrics_table} from long to wide schema."
-    print(msg)
-    query = wide_from_long_query(fundamental_metrics_table, 'metric')
-    conn.execute(query)
-    query = sa.text(f"DROP TABLE {fundamental_metrics_table}")
-    conn.execute(query)
-    query = sa.text(f"ALTER TABLE {fundamental_metrics_table + '_wide'} RENAME TO {fundamental_metrics_table}")
-    conn.execute(query)
-    msg = f"Conversion complete for {fundamental_metrics_table}."
-    print(msg)
+    # Verify that the DuckDB tables exist
+    convert_table(conn, fundamentals_amended_table)
+    convert_table(conn, fundamentals_reported_table)
+    convert_table(conn, fundamental_metrics_table)
 
 
 def downgrade() -> None:
