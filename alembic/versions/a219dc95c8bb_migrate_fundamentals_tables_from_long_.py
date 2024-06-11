@@ -127,7 +127,7 @@ def wide_from_long_query(table, metric_column):
 
 def table_exists(con, table: str) -> bool:
     """Check if a table exists in the DuckDB database using SHOW TABLES."""
-    tables = con.execute("SHOW TABLES").fetchall()
+    tables = con.execute(sa.text("SHOW TABLES")).fetchall()
     return (table,) in tables
 
 
