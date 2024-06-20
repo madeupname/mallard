@@ -36,8 +36,9 @@ def upgrade() -> None:
     # Create fundamentals daily table
     query = sa.text(f"""
         CREATE TABLE IF NOT EXISTS {fundamentals_daily_table}
-        (vendor_symbol_id VARCHAR PRIMARY KEY, symbol VARCHAR, date DATE, market_cap DOUBLE, enterprise_val DOUBLE, pe_ratio DOUBLE,
-        pb_ratio DOUBLE, trailing_peg_1y DOUBLE)
+        (vendor_symbol_id VARCHAR, symbol VARCHAR, date DATE, market_cap DOUBLE, enterprise_val DOUBLE, pe_ratio DOUBLE,
+        pb_ratio DOUBLE, trailing_peg_1y DOUBLE,
+        PRIMARY KEY (vendor_symbol_id, date))
         """)
     conn.execute(query)
 

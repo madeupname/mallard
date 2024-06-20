@@ -8,3 +8,6 @@ duckdb_engine>=0.12
 TA-Lib>=0.4
 yfinance>=0.2.37
 pyarrow>=15.0.0
+configparser~=6.0.1
+pandas>=2.2.0
+setuptools>=68.2.0

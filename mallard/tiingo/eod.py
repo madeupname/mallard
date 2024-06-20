@@ -45,7 +45,7 @@ def signal_handler(signal, frame):
     shutdown_flag = True
 
 
-if sys.platform == 'win32':
+if hasattr(signal, 'SIGBREAK'):
     signal.signal(signal.SIGBREAK, signal_handler)
 
 # Register signal handler
@@ -257,6 +257,33 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         return 'fail'
 
 
+def delete_infinity(duckdb_con):
+    """Price data can have adjusted values of infinity, which is obviously impossible.
+    This finds rows with infinity and deletes them and everything before it.
+    At current time, this affects only a few stocks."""
+    eod_table = config['tiingo']['eod_table']
+    with duckdb_con.cursor() as local_con:
+        local_con.execute(f"""
+        DELETE FROM {eod_table} eod
+        WHERE EXISTS (
+            SELECT 1
+            FROM (
+                SELECT
+                    vendor_symbol_id,
+                    MAX(date) AS max_date
+                FROM {eod_table}
+                WHERE adj_open = 'infinity'
+                    OR adj_close = 'infinity'
+                    OR adj_high = 'infinity'
+                    OR adj_low = 'infinity'
+                GROUP BY vendor_symbol_id
+            ) AS latest_infinities
+            WHERE eod.vendor_symbol_id = latest_infinities.vendor_symbol_id
+                AND eod.date <= latest_infinities.max_date
+        );
+        """)
+
+
 # Create a ThreadPoolExecutor
 workers = int(config['DEFAULT']['threads'])
 os.environ['NUMEXPR_MAX_THREADS'] = str(workers)
@@ -289,7 +316,7 @@ if workers == 1:
         total = count_skip + count_new + count_update + count_fail
         if total > 0 and total % 500 == 0:
             print(
-                f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+                f"Update: {total} processed | Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}")
             if count_fail == total:
                 msg = "Everything failed. Check API key and config.ini for issues. Exiting."
                 print(msg)
@@ -332,14 +359,17 @@ else:
             total = count_skip + count_new + count_update + count_fail
             if total > 0 and total % 500 == 0:
                 print(
-                    f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+                    f"Update: {total} processed | Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}")
                 if count_fail == total:
                     msg = "Everything failed. Check API key and config.ini for issues. Exiting."
                     print(msg)
                     logger.error(msg)
                     exit(1)
 
+if config.getboolean('tiingo', 'delete_infinity'):
+    delete_infinity(duckdb_con)
+
 duckdb_con.close()
-msg = f"EOD update complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}"
+msg = f"EOD update complete: Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}"
 print(msg)
 logger.info(msg)

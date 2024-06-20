@@ -45,7 +45,7 @@ def signal_handler(signal, frame):
 # Register signal handler
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
-if sys.platform == 'win32':
+if hasattr(signal, 'SIGBREAK'):
     signal.signal(signal.SIGBREAK, signal_handler)
 
 fundamentals_daily_dir = os.path.join(config['tiingo']['dir'], 'fundamentals/daily')
@@ -219,9 +219,9 @@ else:
             total = count_skip + count_new + count_update + count_fail
             if total > 0 and total % 500 == 0:
                 print(
-                    f"Update: {total} processed | Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}")
+                    f"Update: {total} processed | Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}")
 
 duckdb_con.close()
-msg = f"Fundamentals daily processing complete: Skipped {count_skip} | Downloaded {count_new} | Updated {count_update} | Failed {count_fail}"
+msg = f"Fundamentals daily processing complete: Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}"
 logger.info(msg)
 print(msg)

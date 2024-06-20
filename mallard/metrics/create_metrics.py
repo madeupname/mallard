@@ -1,16 +1,15 @@
 # Creates/updates daily metrics
-import concurrent
 import configparser
 import os
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import duckdb
 
 from mallard.metrics.daily_metrics import update_macd, avg_daily_trading_value
 from mallard.metrics.fundamental_metrics import calculate_ttm, roic, nopat
+from mallard.metrics.parallelize import parallelize
 from mallard.tiingo.tiingo_util import logger
 
 # Get config file
@@ -51,43 +50,6 @@ if start is None:
     start = config['DEFAULT']['metrics_start'] if config.has_option('DEFAULT', 'metrics_start') else '1900-01-01'
 
 
-def parallelize(workers, vendor_symbol_ids, fun, *args, **kwargs):
-    """Run the given function in parallel for each vendor_symbol_id."""
-    print(f"Running {fun.__name__} in parallel with {workers} workers for {len(vendor_symbol_ids)} symbols.")
-    results = {'count_skip': 0, 'count_success': 0, 'count_fail': 0}
-    if workers == 1:
-        for id in vendor_symbol_ids:
-            status = fun(id, *args, **kwargs)
-            if status == 'skip':
-                results['count_skip'] += 1
-            elif status == 'success':
-                results['count_success'] += 1
-            elif status == 'fail':
-                results['count_fail'] += 1
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            # Submit the tasks to the thread pool
-            futures = {executor.submit(fun, id, *args, **kwargs): id for id in vendor_symbol_ids}
-            for future in concurrent.futures.as_completed(futures):
-                row = futures[future]
-                try:
-                    status = future.result()
-                    if status == 'skip':
-                        results['count_skip'] += 1
-                    elif status == 'success':
-                        results['count_success'] += 1
-                    elif status == 'fail':
-                        results['count_fail'] += 1
-                except Exception as e:
-                    print(f"Error processing {row}\n{e}")
-                    results['count_fail'] += 1
-                total = results['count_skip'] + results['count_success'] + results['count_fail']
-                if total > 0 and total % 500 == 0:
-                    print(
-                        f"{fun.__name__}: Skipped {results['count_skip']}  Updated {results['count_success']}  Failed {results['count_fail']}")
-    return results
-
-
 def update_metrics():
     """Updates all metrics specified in the config file.
     Uses a ThreadPoolExecutor to run them in parallel if more than 1 worker specified."""
@@ -118,8 +80,8 @@ def update_metrics():
         msg = "Calculating MACD..."
         print(msg)
         logger.info(msg)
-        eod_symbols = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
-        msg = f"MACD: Skipped {eod_symbols['count_skip']}  Updated {eod_symbols['count_success']}  Failed {eod_symbols['count_fail']}"
+        macd_results = parallelize(workers, vendor_symbol_ids, update_macd, duckdb_con, start_date=start)
+        msg = f"MACD: Skipped {macd_results['count_skip']}  Updated {macd_results['count_success']}  Failed {macd_results['count_fail']}"
         print(msg)
         logger.info(msg)
     if 'roic' in daily_metrics:

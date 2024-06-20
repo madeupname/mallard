@@ -66,7 +66,7 @@ def update_macd(vendor_symbol_id: str, duckdb_con: duckdb.DuckDBPyConnection, st
         })
 
         # Clean data (remove NaNs due to MACD calculation starting period)
-        results = results.filter(
+        results = results.filter(   
             (pl.col('macd').is_not_nan()) &
             (pl.col('macd_signal').is_not_nan()) &
             (pl.col('macd_hist').is_not_nan())
