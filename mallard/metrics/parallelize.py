@@ -8,6 +8,7 @@ def parallelize(workers, vendor_symbol_ids, fun, *args, **kwargs):
     results = {'count_skip': 0, 'count_success': 0, 'count_fail': 0}
     if workers == 1:
         for id in vendor_symbol_ids:
+
             status = fun(id, *args, **kwargs)
             if status == 'skip':
                 results['count_skip'] += 1
