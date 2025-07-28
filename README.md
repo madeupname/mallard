@@ -12,14 +12,14 @@ The first data provider is Tiingo because they are the most respected affordable
 Long term goals:
 * Generate a large set of metrics/indicators. 
 * Turn that into the world's greatest stock screener for anyone who knows SQL. 
-* Easily generate datasets to use in backtesting (e.g., [Lumibot](https://github.com/Lumiwealth/lumibot/)) and ML.
+* Easily generate datasets to use in backtesting and ML.
 
 Disclaimer: I am not associated with any vendor or project used by Mallard.
 
 ## Installation and Configuration
 Decide where your data directory will be. It will hold all files from data providers and the database, so expect it to
 be >10GB assuming you're getting the full dataset of price and fundamentals. That's with the quality filters enabled.
-Mine with various metrics generated is currently 10GB.
+Mine with various metrics generated is currently >70GB.
 
 Copy `example_config.ini` to your data directory and edit it as needed. Must add your Tiingo API token.
 
@@ -89,6 +89,8 @@ welcome:
   * Standard 12, 26, 9 period.
 * ROIC and NOPAT
   * NOPAT is straightforward, but ROIC is a best-effort attempt using Aswath Damodaran's forumula. Keep in mind an analyst would be going through the earnings reports and manipulating the balance sheet to get both as accurate as possible. Probably why Yahoo Finance and Fidelity don't even bother providing it.
+* Margins (margins)
+  * Profit margin to start. Will also calculate profit TTM.
 
 ## Data Management
 If you keep all the default filters for symbols, you still get a large amount of data:
