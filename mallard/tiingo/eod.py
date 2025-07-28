@@ -4,9 +4,8 @@ import configparser
 import logging
 import os
 import signal
-import sys
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta, datetime, date
+from datetime import datetime, date
 from io import StringIO
 from pathlib import Path
 
@@ -16,7 +15,7 @@ import requests
 
 from mallard.RateLimiterContext import RateLimiterContext
 from mallard.normalization import get_column_mapper
-from mallard.tiingo.tiingo_util import quarantine_file, quarantine_data
+from mallard.tiingo.tiingo_util import quarantine_file, quarantine_data, get_next_trading_date_to_download
 
 # Get config file
 config_file = os.getenv("MALLARD_CONFIG")
@@ -24,7 +23,7 @@ config = configparser.ConfigParser()
 config.read(config_file)
 
 logger = logging.getLogger(__name__)
-# Format with created, level, filename, message
+# Set logging format of created, level, filename, message
 logging.basicConfig(filename=config['DEFAULT']['log_file'], level=config['DEFAULT']['log_level'],
                     format=config['DEFAULT']['log_format'])
 
@@ -53,6 +52,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+@DeprecationWarning
 def is_valid_eod_file(sym: str, file_path: str, duckdb_con):
     """Check the file for problems"""
     contents = Path(file_path).read_text()
@@ -79,9 +79,7 @@ def is_valid_eod_file(sym: str, file_path: str, duckdb_con):
             error = "No date in file. "
     if error:
         if is_active:
-            # Move the file to quarantine_dir
-            os.rename(file_path, os.path.join(quarantine_dir, os.path.basename(file_path)))
-            logger.error(f"{sym}: {error} Quarantined active symbol.")
+            logger.error(f"{sym}: {error} No data for active symbol.")
         else:
             # Move the file to exclude_dir
             os.rename(file_path, os.path.join(exclude_dir, os.path.basename(file_path)))
@@ -103,7 +101,11 @@ count_new = 0
 count_update = 0
 count_fail = 0
 
-# If tickers is the source, use the supported tickers file. Not advised.
+tiingo_symbols = config['tiingo']['symbols_table']
+tiingo_eod = config['tiingo']['eod_table']
+
+# If tickers is the source, use the supported tickers file. Not advised unless fetching ETFs, mutual funds,
+# or stocks without fundamentals like SPX.
 if config['tiingo']['eod_source'] == 'tickers':
     with duckdb.connect(db_file, read_only=True) as con:
         result = con.execute(f"""
@@ -111,31 +113,206 @@ if config['tiingo']['eod_source'] == 'tickers':
         FROM {config['tiingo']['symbols_table']} s
         LEFT JOIN (
             SELECT symbol, MAX(date) AS max_date
-            FROM {config['tiingo']['eod_table']}
+            FROM {tiingo_eod}
             GROUP BY symbol
         ) e ON s.symbol = e.symbol
-        WHERE s.end_date > e.max_date""").fetchall()
+        WHERE s.end_date > e.max_date
+        """).fetchall()
     msg = "Using Tiingo supported tickers file as the source of symbols. "
 else:
     # Use the fundamentals meta file to ensure you're getting symbols that are reporting financials.
     with duckdb.connect(db_file, read_only=True) as con:
         result = con.execute(f"""
-                SELECT f.symbol, e.max_date, f.vendor_symbol_id, f.is_active
+            SELECT 
+                f.symbol,
+                f.vendor_symbol_id,
+                f.is_active,
+                e.max_date
+            FROM 
+                {config['tiingo']['fundamentals_meta_table']} f
+            LEFT JOIN (
+                SELECT 
+                    vendor_symbol_id, 
+                    MAX(date) AS max_date
+                FROM 
+                    {tiingo_eod}
+                GROUP BY 
+                    vendor_symbol_id
+            ) e ON f.vendor_symbol_id = e.vendor_symbol_id
+            ORDER BY 
+                f.symbol            
+        """).fetchall()
+        msg = "Using Tiingo fundamentals meta file as the source of symbols. "
+
+
+def add_required_symbols(result: list, vendor_symbol_ids: list = [], symbols: list = []):
+    """Takes lists of vendor_symbol_ids and symbols and adds those rows to result if they are not already there."""
+
+    if symbols:
+        # If there are duplicate symbols, remove them
+        symbols = list(set(symbols))
+        # Remove symbols that are already in result
+        for symbol in symbols:
+            for row in result:
+                if row[0] == symbol:
+                    symbols.remove(symbol)
+                    break
+        if symbols:
+            msg = f"Adding required symbols: {symbols}"
+            print(msg)
+            logger.info(msg)
+
+            # First we check if the symbols are already in the database
+            quoted_symbols = [f"'{s}'" for s in symbols]
+            with duckdb.connect(db_file, read_only=True) as con:
+                existing_symbols = con.execute(f"""
+                SELECT s.symbol, e.max_date
+                FROM {config['tiingo']['symbols_table']} s
+                LEFT JOIN (
+                    SELECT symbol, MAX(date) AS max_date
+                    FROM {config['tiingo']['eod_table']}
+                    WHERE symbol IN ({','.join(quoted_symbols)})
+                    GROUP BY symbol
+                ) e ON s.symbol = e.symbol
+                WHERE s.end_date > e.max_date AND s.symbol IN ({','.join(quoted_symbols)})""").fetchall()
+            # Add the new symbols to result
+            for row in existing_symbols:
+                if row not in result:
+                    # We use symbol for vendor_symbol_id because so much code assumes it exists.
+                    # Must be symbol, vsid, is_active, and date, matching fundamentals query above.
+                    result.append((row[0], row[0], True, row[1]))
+                    symbols.remove(row[0])
+            # If there are still symbols left, we add them to result with vendor_symbol_id = symbol
+            for symbol in symbols:
+                result.append((symbol, symbol, True, None))
+
+    if vendor_symbol_ids:
+        # If there are duplicate vendor_symbol_ids, remove them
+        vendor_symbol_ids = list(set(vendor_symbol_ids))
+        # Remove vendor_symbol_ids that are already in result
+        for vendor_symbol_id in vendor_symbol_ids:
+            for row in result:
+                if row[2] == vendor_symbol_id:
+                    vendor_symbol_ids.remove(vendor_symbol_id)
+                    break
+        if not vendor_symbol_ids:
+            return
+
+        msg = f"Adding required vendor_symbol_ids: {vendor_symbol_ids}"
+        print(msg)
+        logger.info(msg)
+        # First we check if the vendor_symbol_ids are already in the database
+        quoted_vendor_symbol_ids = [f"'{s}'" for s in vendor_symbol_ids]
+        with duckdb.connect(db_file, read_only=True) as con:
+            new_vendor_symbol_ids = con.execute(f"""
+                SELECT f.symbol, 
+                       CASE WHEN (SELECT COUNT(*) FROM {config['tiingo']['eod_table']}) > 0 
+                            THEN e.max_date 
+                            ELSE NULL 
+                       END as max_date, 
+                       f.vendor_symbol_id, 
+                       f.is_active
                 FROM {config['tiingo']['fundamentals_meta_table']} f
                 LEFT JOIN (
                     SELECT vendor_symbol_id, MAX(date) AS max_date
                     FROM {config['tiingo']['eod_table']}
+                    WHERE vendor_symbol_id IN ({','.join(quoted_vendor_symbol_ids)})
                     GROUP BY vendor_symbol_id
                 ) e ON f.vendor_symbol_id = e.vendor_symbol_id
-                WHERE f.symbol in (SELECT DISTINCT symbol FROM {config['tiingo']['symbols_table']})
-                ORDER BY f.symbol""").fetchall()
-        msg = "Using Tiingo fundamentals meta file as the source of symbols. "
+                JOIN {config['tiingo']['symbols_table']} s ON f.symbol = s.symbol
+                WHERE f.vendor_symbol_id IN ({','.join(quoted_vendor_symbol_ids)}) 
+                  AND ((SELECT COUNT(*) FROM {config['tiingo']['eod_table']}) = 0 OR e.max_date < s.end_date)
+                ORDER BY f.symbol
+            """).fetchall()
+        # Add the new vendor_symbol_ids to result
+        for row in new_vendor_symbol_ids:
+            if row not in result:
+                result.append((row[0], row[1], row[2], row[3]))
+                vendor_symbol_ids.remove(row[2])
+        # If there are still vendor_symbol_ids left, we get their symbols and add them to result
+        if vendor_symbol_ids:
+            quoted_vendor_symbol_ids = [f"'{s}'" for s in vendor_symbol_ids]
+            with duckdb.connect(db_file, read_only=True) as con:
+                symbols = con.execute(f"""
+                SELECT vendor_symbol_id, symbol, is_active
+                FROM {config['tiingo']['fundamentals_meta_table']}
+                WHERE vendor_symbol_id IN ({','.join(quoted_vendor_symbol_ids)})""").fetchall()
+            for row in symbols:
+                result.append((row[1], None, row[0], row[2]))
+
+
+def get_etfs():
+    etf_results = []
+    with duckdb.connect(db_file, read_only=True) as con:
+        # First, get the maximum end_date from the symbols table to identify active ETFs
+        max_end_date = con.execute(f"""
+        SELECT MAX(end_date) 
+        FROM {config['tiingo']['symbols_table']}
+        """).fetchone()[0]
+
+        # Then query for ETFs with that max end_date (active ETFs)
+        etfs = con.execute(f"""
+        SELECT 
+            s.symbol, 
+            CONCAT(s.symbol, '_', s.start_date) AS vendor_symbol_id,
+            TRUE AS is_active,
+            e.max_date
+        FROM {config['tiingo']['symbols_table']} s
+        LEFT JOIN (
+            SELECT 
+                symbol, 
+                MAX(date) AS max_date
+            FROM {tiingo_eod}
+            GROUP BY 
+                symbol
+        ) e ON s.symbol = e.symbol
+        WHERE 
+            s.asset_type = 'ETF' 
+            AND s.end_date = '{max_end_date}'
+        ORDER BY 
+            s.symbol
+        """).fetchall()
+
+        etf_results = list(etfs)
+
+        msg = f"Found {len(etf_results)} active ETFs to process."
+        print(msg)
+        logger.info(msg)
+
+    return etf_results
+
+
+required_vsids = [vsid for vsid in config['tiingo'].get('vendor_symbol_ids', '').split(',') if vsid]
+required_symbols = config['tiingo'].get('symbols', '').split(',')
+
+# Add required symbols to result
+add_required_symbols(result, required_vsids, required_symbols)
 
 msg += f"Processing {len(result)} symbols as required. "
 print(msg)
 logger.info(msg)
 
+# Get ETFs if needed
+ticker_requirements = config['tiingo'].get('ticker_requirements', '').split(',')
+if 'etf' in ticker_requirements:
+    etf_results = get_etfs()
 
+    # Combine results
+    if etf_results:
+        # Create a set of existing vendor_symbol_ids to avoid duplicates
+        existing_symbols = {row[0] for row in result if row[0] is not None}
+
+        # Add ETFs that aren't already in the result
+        for etf in etf_results:
+            if etf[0] not in existing_symbols:
+                result.append(etf)
+
+        msg = f"Combined result now contains {len(result)} symbols (including ETFs)."
+        print(msg)
+        logger.info(msg)
+
+
+@DeprecationWarning
 def load_from_file(file_name, duckdb_con):
     """This is a utility function you can use if you already have downloaded price files."""
     # file_name format is `{symbol}_{vendor_symbol_id}_daily.csv`. Split to retrieve those variables.
@@ -176,6 +353,9 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         return 'skip'
 
     try:
+        # Format start_date as string for URL if it's a date object
+        start_date_str = start_date.strftime('%Y-%m-%d') if isinstance(start_date, date) else start_date
+
         # We append an identifier to the file name to differentiate it in exclude and quarantine directories.
         # It also allows you to open different data files for the same symbol in Excel at once.
         file_name = f"{symbol}_{vendor_symbol_id}_daily.csv"
@@ -187,26 +367,47 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
         is_append = False
         if os.path.exists(file):
             is_append = True
-        url = f"{base_url}/{vendor_symbol_id}/prices?startDate={start_date}&format=csv&token={config['tiingo']['api_token']}"
+        if '_' in vendor_symbol_id:
+            # Extract the part before the underscore
+            vsid = vendor_symbol_id.split('_')[0]
+        else:
+            vsid = vendor_symbol_id
+
+        url = f"{base_url}/{vsid}/prices?startDate={start_date_str}&format=csv&token={config['tiingo']['api_token']}"
+
+        # Get number of days since start_date
+        days_missing = (datetime.now().date() - start_date).days if isinstance(start_date, date) else 0
+
         with RateLimiterContext():
             r = requests.get(url)
         r.raise_for_status()
         data = r.content
+
+        # Check for empty or invalid data
         if not data or not data.startswith(
                 b'date,close,high,low,open,volume,adjClose,adjHigh,adjLow,adjOpen,adjVolume,divCash,splitFactor'):
-            quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
-            return 'fail'
+            # Due to errors from the vendor, don't quarantine automatically anymore.
+            if not is_append or is_active == False or days_missing >= 7:
+                logger.warning(f"Empty or invalid data format for {symbol} ({vendor_symbol_id})")
+                return 'fail'
+            else:
+                return 'skip'
+
+        # Check if there's any data after the header
         data_without_header = r.content.split(b'\n', 1)[1]
         if not data_without_header:
-            if not is_append:
-                quarantine_data(symbol, vendor_symbol_id, is_active, data, file_type)
+            # Apply the same logic as above
+            if not is_append or is_active == False or days_missing >= 7:
+                logger.warning(f"Empty or invalid data format for {symbol} ({vendor_symbol_id})")
                 return 'fail'
             # If we're updating, there's a good chance the start date falls on a weekend and there legitimately
             # isn't any data to fetch.
             return 'skip'
+
         try:
             # Create a DataFrame from the CSV data and rename the columns to match the EOD table
             df = pl.read_csv(StringIO(data.decode('utf-8')))
+
             # If any values in divCash aren't 0, or any values in splitFactor aren't 1, we need to refetch the entire
             # file.
             if is_append:
@@ -215,8 +416,17 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
                 if (divCash_non_zero or splitFactor_not_one):
                     # Delete the file
                     os.remove(file)
+                    # Delete all daily metrics
+                    with duckdb.connect(db_file) as con:
+                        con.execute(f"""
+                        DELETE FROM daily_metrics 
+                        WHERE vendor_symbol_id = '{vendor_symbol_id}';
+                        DELETE FROM tiingo_fundamentals_daily
+                        WHERE vendor_symbol_id = '{vendor_symbol_id}';
+                        """)
                     logger.info(
                         f"{symbol}: Dividend or split detected. Refetching full history for {symbol} / {vendor_symbol_id}.")
+
                     return update_symbol(symbol, '1900-01-01', duckdb_con, vendor_symbol_id, is_active)
 
             # Rename columns to match the EOD table
@@ -224,8 +434,9 @@ def update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id=None, is_acti
             df = df.rename({col('adj_close'): 'adj_close', col('adj_high'): 'adj_high', col('adj_low'): 'adj_low',
                             col('adj_open'): 'adj_open', col('adj_volume'): 'adj_volume', col('div_cash'): 'div_cash',
                             col('split_factor'): 'split_factor'})
-            # Add symbol column
+            # Add symbols columns
             df = df.with_columns([pl.lit(vendor_symbol_id).alias('vendor_symbol_id'), pl.lit(symbol).alias('symbol')])
+
             # Insert the DataFrame into the EOD table
             with duckdb_con.cursor() as local_con:
                 local_con.execute(f"INSERT OR REPLACE INTO {config['tiingo']['eod_table']} BY NAME FROM df")
@@ -289,20 +500,23 @@ workers = int(config['DEFAULT']['threads'])
 os.environ['NUMEXPR_MAX_THREADS'] = str(workers)
 duckdb_con = duckdb.connect(db_file)
 
+### DANGER: TODO Single threading is BROKEN, code is modified for one-off testing 
 # If workers is 1, use a for loop to process the symbols. This is useful for debugging.
+# Replace the entire threading section (around lines 430-480) with:
 if workers == 1:
     for row in result:
         symbol = row[0]
-        db_end_date = row[1]
-        if db_end_date and isinstance(db_end_date, date) and db_end_date >= datetime.today().date():
+        vendor_symbol_id = row[1]
+        is_active = row[2]
+        db_end_date = row[3]
+
+        # Get the next trading date we should download
+        start_date = get_next_trading_date_to_download(db_end_date)
+
+        if start_date is None:
             count_skip += 1
             continue
-        vendor_symbol_id = None
-        is_active = None
-        if len(row) == 4:
-            vendor_symbol_id = row[2]
-            is_active = row[3]
-        start_date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+
         status = update_symbol(symbol, start_date, duckdb_con, vendor_symbol_id, is_active)
         if status == 'skip':
             count_skip += 1
@@ -328,16 +542,17 @@ else:
         futures = {}
         for row in result:
             symbol = row[0]
-            db_end_date = row[1]
-            if db_end_date and isinstance(db_end_date, date) and db_end_date >= datetime.today().date():
+            vendor_symbol_id = row[1]
+            is_active = row[2]
+            db_end_date = row[3]
+
+            # Get the next trading date we should download
+            start_date = get_next_trading_date_to_download(db_end_date)
+
+            if start_date is None:
                 count_skip += 1
                 continue
-            vendor_symbol_id = None
-            is_active = None
-            if len(row) == 4:
-                vendor_symbol_id = row[2]
-                is_active = row[3]
-            start_date = db_end_date + timedelta(days=1) if db_end_date else '1900-01-01'
+
             futures[executor.submit(update_symbol, symbol, start_date, duckdb_con, vendor_symbol_id, is_active)] = row
 
         for future in concurrent.futures.as_completed(futures):
@@ -366,8 +581,8 @@ else:
                     logger.error(msg)
                     exit(1)
 
-if config.getboolean('tiingo', 'delete_infinity'):
-    delete_infinity(duckdb_con)
+# if config.getboolean('tiingo', 'delete_infinity'):
+#     delete_infinity(duckdb_con)
 
 duckdb_con.close()
 msg = f"EOD update complete: Skipped {count_skip} | New {count_new} | Updated {count_update} | Failed {count_fail}"

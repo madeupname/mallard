@@ -1,17 +1,19 @@
-"""This script does 3 things:
+"""This script does the following:
 1. Downloads the Tiingo fundamentals metadata, stores it in a table, and optionally removes symbols from the supported
 symbols table if they have no fundamental data.
 NOTE: This table is recreated from scratch every time.
 
-2. Downloads/updates latest/amended financial statements for all stocks, storing in a fundamentals table.
+2. Downloads/updates latest/amended financial statements for all stocks, storing in an amended fundamentals table.
 
 3. Downloads/updates reported/original financial statements for all stocks, storing in a reported fundamentals table.
+
+4. Forward fills the fundamentals tables.
+
 """
 import concurrent
 import configparser
 import os
 import signal
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import StringIO
@@ -29,6 +31,7 @@ from mallard.tiingo.tiingo_util import logger, quarantine_data
 config_file = os.getenv('MALLARD_CONFIG')
 config = configparser.ConfigParser()
 config.read(config_file)
+metrics = set(config['DEFAULT']['metrics'].split(","))
 
 db_file = config['DEFAULT']['db_file']
 
@@ -60,6 +63,7 @@ with open(meta_csv, 'wb') as f:
 fundamentals_meta_table = config['tiingo']['fundamentals_meta_table']
 fundamentals_amended_distinct_table = config['tiingo']['fundamentals_amended_distinct_table']
 fundamentals_amended_table = config['tiingo']['fundamentals_amended_table']
+fundamentals_last_updated_table = config['tiingo']['fundamentals_last_updated_table']
 
 # Truncate fundamentals meta table
 print(f"Truncating {fundamentals_meta_table}")
@@ -71,7 +75,17 @@ with duckdb.connect(db_file) as con:
 col = get_sql_column_provider('tiingo')
 ticker_requirements = config['DEFAULT']['ticker_requirements'].split(",")
 # If the user only wants USD reporting companies, add WHERE clause
-where = f"WHERE reporting_currency = 'usd'" if "usd" in ticker_requirements else ""
+# where = f"WHERE reporting_currency = 'usd'" if "usd" in ticker_requirements else ""
+
+# Extract the symbols list from config
+config_symbols = config['DEFAULT']['symbols'].split(',') if 'symbols' in config['DEFAULT'] else []
+config_symbols_str = ', '.join([f"'{s.strip()}'" for s in config_symbols])
+
+# If the user only wants USD reporting companies, add WHERE clause
+# Modified to include symbols from config.ini
+if "usd" in ticker_requirements:
+    where = f"WHERE reporting_currency = 'usd' OR UPPER(ticker) IN ({config_symbols_str})"
+
 if config.getboolean('tiingo', 'has_fundamentals_addon'):
     select_query = f"""
         SELECT {col('vendor_symbol_id')}, {col('symbol')}, {col('name')}, {col('is_active')}, {col('is_adr')},
@@ -101,16 +115,60 @@ with duckdb.connect(db_file) as con:
 
 # Delete rows from symbols table if symbol not in fundamentals meta table (if configured).
 ticker_requirements = config["DEFAULT"]["ticker_requirements"].split(",")
+symbols_table = config['tiingo']['symbols_table']
 if "fundamentals" in ticker_requirements:
     with duckdb.connect(db_file) as con:
+        
+        # TODO investigate consequences of this
+        # print(
+        #     f"Deleting rows in {symbols_table} that aren't in {fundamentals_meta_table}. Current count:")
+        # con.sql(f"SELECT COUNT(symbol) FROM {symbols_table}").show()
+        # con.execute(f"""
+        #     DELETE FROM {symbols_table} WHERE symbol NOT IN (SELECT UPPER(symbol) FROM {fundamentals_meta_table})
+        #     """)
+        # print(f"{symbols_table} new row count:")
+        # con.sql(f"SELECT COUNT(symbol) FROM {symbols_table}").show()
+
+        # Delete rows from fundamentals meta table if symbol not in symbols table (if configured).
         print(
-            f"Deleting rows in {config['tiingo']['symbols_table']} that aren't in {fundamentals_meta_table}. Current count:")
-        con.sql(f"SELECT COUNT(symbol) FROM {config['tiingo']['symbols_table']}").show()
+            f"Deleting rows in {fundamentals_meta_table} that aren't in {symbols_table}. Current count:")
+        con.sql(f"SELECT COUNT(symbol) FROM {fundamentals_meta_table}").show()
         con.execute(f"""
-            DELETE FROM {config['tiingo']['symbols_table']} WHERE symbol NOT IN (SELECT UPPER(symbol) FROM {fundamentals_meta_table})
+            DELETE FROM {fundamentals_meta_table} WHERE UPPER(symbol) NOT IN (SELECT symbol FROM {symbols_table})
             """)
-        print(f"{config['tiingo']['symbols_table']} new row count:")
-        con.sql(f"SELECT COUNT(symbol) FROM {config['tiingo']['symbols_table']}").show()
+        print(f"{fundamentals_meta_table} new row count:")
+        con.sql(f"SELECT COUNT(symbol) FROM {fundamentals_meta_table}").show()
+
+# For each row in fundamentals meta table, create a row in the last updated table with vendor_symbol_id if it doesn't
+# already exist. This is used to track which symbols have been updated.
+with duckdb.connect(db_file) as con:
+    try:
+        con.execute(f"""
+        INSERT OR IGNORE INTO {fundamentals_last_updated_table} (vendor_symbol_id)
+        SELECT vendor_symbol_id
+        FROM {fundamentals_meta_table}
+        """)
+    except Exception as e:
+        print(f"Error updating {fundamentals_last_updated_table}: {e}")
+        exit(1)
+
+
+def update_fundamentals_last_updated(vendor_symbol_id: str, duckdb_con, as_reported: bool = False):
+    """Insert the vendor_symbol_id and the timestamp in tiingo_fundamentals_meta.statement_last_updated
+    into tiingo_fundamentals_last_updated. Update if it already exists."""
+    with duckdb_con.cursor() as con:
+        try:
+            con.execute(f"""
+            UPDATE {config['tiingo']['fundamentals_last_updated_table']} 
+            SET {'reported_last_updated' if as_reported else 'amended_last_updated'} = (
+                SELECT statement_last_updated 
+                FROM {config['tiingo']['fundamentals_meta_table']} 
+                WHERE vendor_symbol_id = '{vendor_symbol_id}')
+            WHERE vendor_symbol_id = '{vendor_symbol_id}'
+            """)
+
+        except Exception as e:
+            print(f"Error updating {config['tiingo']['fundamentals_last_updated_table']}: {e}")
 
 
 def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=False):
@@ -132,6 +190,7 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         # Skip bad files
         if (os.path.exists(os.path.join(exclude_dir, file_name)) or
                 os.path.exists(os.path.join(quarantine_dir, file_name))):
+            logger.info(f"Skipping {file_name} because it's in the quarantine or exclude directory")
             return 'skip'
         reported_param = "&asReported=true" if as_reported else ""
         url = f"{config['tiingo']['fundamentals_url']}/{vendor_symbol_id}/statements?startDate=1900-01-01{reported_param}&format=csv&token={config['tiingo']['api_token']}"
@@ -151,6 +210,8 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
         # Create a DataFrame from the CSV data and add the vendor_symbol_id and symbol columns.
         df = pl.read_csv(StringIO(data.decode('utf-8')))
         df = df.with_columns([pl.lit(vendor_symbol_id).alias('vendor_symbol_id'), pl.lit(symbol).alias('symbol')])
+        # Remove duplicate rows
+        df = df.unique()
         # Convert/pivot the DataFrame from long to wide format
         df_wide = df.pivot(
             index=["date", "year", "quarter", "vendor_symbol_id", "symbol"],
@@ -179,25 +240,52 @@ def update_symbol(vendor_symbol_id, symbol, is_active, duckdb_con, as_reported=F
     update_dir = fundamentals_reported_dir if as_reported else fundamentals_amended_dir
     with open(os.path.join(update_dir, file_name), 'wb') as f:
         f.write(data)
+    # Update the last updated timestamp
+    update_fundamentals_last_updated(vendor_symbol_id, duckdb_con, as_reported)
     return 'success'
 
 
-def update_fundamentals(as_of, as_reported=False):
-    """Uses a thread pool to download fundamentals for all symbols that require updating and updates the DB."""
+# Upon review of the raw fundamental data, this does not appear necessary.
+@DeprecationWarning
+def forward_fill_reported(duckdb_con):
+    """Forward fills values in the reported fundamentals table because subsequent filings might be missing data from
+    previous filings for the same year/quarter."""
+    fundamentals_table = config['tiingo']['fundamentals_reported_table']
+    with duckdb_con.cursor() as con:
+        # Get list of metric columns, excluding identifier and time columns, from fundamentals_table
+        column_names = con.sql(f"SELECT * FROM {fundamentals_table}").columns
+        column_names = [col for col in column_names if
+                        col not in ("vendor_symbol_id", "symbol", "date", "year", "quarter")]
+        # Create LAST_VALUE window function query for each metric column
+        window_queries = [
+            f"""LAST_VALUE({col} IGNORE NULLS) OVER (PARTITION BY vendor_symbol_id, "year", quarter ORDER BY date ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS {col}"""
+            for col in column_names]
+        set_queries = [f"{col} = ff.{col}" for col in column_names]
+        query = f"""
+        WITH ForwardFilled AS (
+            SELECT
+                vendor_symbol_id,
+                date,
+                year,
+                quarter,
+                {', '.join(window_queries)}
+            FROM tiingo_fundamentals_reported
+        )
+        
+        UPDATE tiingo_fundamentals_reported AS t
+        SET 
+            {', '.join(set_queries)}
+        FROM ForwardFilled ff
+        WHERE t.vendor_symbol_id = ff.vendor_symbol_id
+            AND t.date = ff.date
+            AND t.year = ff.year
+            AND t.quarter = ff.quarter;
+        """
+        # print(query)
 
-    # Get symbols to update based on whether they have changed since the last time this was run.
-    where = f"WHERE statement_last_updated > '{last_update}'" if last_update else ""
-    with duckdb.connect(db_file) as con:
-        symbols_query = f"""
-            SELECT vendor_symbol_id, symbol, is_active FROM {fundamentals_meta_table}
-            {where}
-            """
-        symbol_ids = con.sql(symbols_query)
-        symbols_count = symbol_ids.count('vendor_symbol_id').fetchall()[0][0]
-        msg = f"Downloading {'reported' if as_reported else 'amended'} fundamentals for {symbols_count} symbols:"
-        print(msg)
-        logger.info(msg)
-        result = symbol_ids.fetchall()
+
+def update_fundamentals(symbol_ids, as_reported=False):
+    """Uses a thread pool to download fundamentals for all symbols that require updating and updates the DB."""
     count_success = 0
     count_fail = 0
     count_skip = 0
@@ -206,7 +294,7 @@ def update_fundamentals(as_of, as_reported=False):
     duckdb_con = duckdb.connect(db_file)
     # If single threaded, don't use a ThreadPoolExecutor. This enables us to use the debugger.
     if workers == 1:
-        for row in result:
+        for row in symbol_ids:
             try:
                 status = update_symbol(row[0], row[1], row[2], duckdb_con, as_reported)
                 if status == 'skip':
@@ -231,7 +319,7 @@ def update_fundamentals(as_of, as_reported=False):
         with ThreadPoolExecutor(max_workers=workers) as executor:
             # Submit the tasks to the thread pool
             futures = {executor.submit(update_symbol, row[0], row[1], row[2], duckdb_con, as_reported): row for row in
-                       result}
+                       symbol_ids}
             for future in concurrent.futures.as_completed(futures):
                 row = futures[future]
                 try:
@@ -246,7 +334,7 @@ def update_fundamentals(as_of, as_reported=False):
                     print(f"Error processing {row}\n{e}")
                     count_fail += 1
                 # Print progress
-                if count_success % 100 == 0:
+                if (count_success + count_fail + count_skip) % 500 == 0:
                     if as_reported:
                         print(
                             f"Reported fundamentals progress: Skipped {count_skip} | Downloaded {count_success} | Failed {count_fail}")
@@ -283,7 +371,7 @@ def get_last_update(as_reported=False):
 
 def create_fundamentals_amended_distinct():
     """Creates a table that combines multiple filings per quarter into one, taking the most recent data for each field."""
-    msg = "Creating the table with the latest data for each field per quarter."
+    msg = f"Creating the {fundamentals_amended_distinct_table} table with the latest data for each metric, per quarter."
     print(msg)
     logger.info(msg)
     df = forward_fill_metrics_table(fundamentals_amended_table)
@@ -291,6 +379,7 @@ def create_fundamentals_amended_distinct():
     # List of metric columns, excluding identifier and time columns
     column_names = [col for col in df.columns if col not in ("vendor_symbol_id", "symbol", "date", "year", "quarter")]
 
+    # Add custom metrics to column names list
     # Group by the key columns and aggregate using the last non-null value for each of the columns
     df_result = df.group_by(["vendor_symbol_id", "year", "quarter"]).agg(
         [pl.col("symbol").last().alias("symbol"),
@@ -300,11 +389,17 @@ def create_fundamentals_amended_distinct():
 
     with duckdb.connect(db_file) as con:
         con.execute(f"CREATE OR REPLACE TABLE {fundamentals_amended_distinct_table} AS SELECT * FROM df_result")
+        # Add margin columns
+        con.execute(f"ALTER TABLE {fundamentals_amended_distinct_table} ADD COLUMN IF NOT EXISTS gross_margin DOUBLE")
+        con.execute(
+            f"ALTER TABLE {fundamentals_amended_distinct_table} ADD COLUMN IF NOT EXISTS operating_margin DOUBLE")
+        con.execute(f"ALTER TABLE {fundamentals_amended_distinct_table} ADD COLUMN IF NOT EXISTS net_margin DOUBLE")
 
 
 def forward_fill_metrics_table(table) -> DataFrame:
     """Takes a table name with metrics columns, such as the fundamentals tables, and does a forward fill on null
-    values."""
+    values.
+    NOTE: I'm not sure this is necessary, but doesn't hurt."""
     with duckdb.connect(db_file) as con:
         df = con.sql(
             f"SELECT * FROM {fundamentals_amended_table} ORDER BY vendor_symbol_id, year, quarter, date").pl()
@@ -320,6 +415,32 @@ def forward_fill_metrics_table(table) -> DataFrame:
     )
 
 
+def get_symbols_to_update(as_reported=False):
+    """Get a list of symbols that need updating. This is a list of tuples with vendor_symbol_id, symbol, and is_active."""
+    with duckdb.connect(db_file) as con:
+        # Get vendor_symbol_ids where the statement_last_updated timestamp in tiingo_fundamentals_meta is greater than
+        # the one in tiingo_fundamentals_last_updated. We do this once for both amended and reported fundamentals
+        # because the meta file doesn't designate which was updated.
+        needs_update = f"""
+        SELECT m.vendor_symbol_id,
+               m.symbol,
+               is_active
+        FROM tiingo_fundamentals_meta m
+        LEFT JOIN tiingo_fundamentals_last_updated u
+        ON m.vendor_symbol_id = u.vendor_symbol_id
+        WHERE
+            {'u.reported_last_updated' if as_reported else 'u.amended_last_updated'} IS NULL OR
+            m.statement_last_updated > {'u.reported_last_updated' if as_reported else 'u.amended_last_updated'};"""
+
+        symbol_ids = con.sql(needs_update)
+        symbols_count = symbol_ids.count('vendor_symbol_id').fetchall()[0][0]
+        msg = f"Downloading fundamentals for {symbols_count} symbols:"
+        print(msg)
+        logger.info(msg)
+        result = symbol_ids.fetchall()
+    return result
+
+
 # Download fundamentals (financial statements)
 if config.getboolean('tiingo', 'has_fundamentals_addon'):
     fundamentals_amended_dir = os.path.join(config['tiingo']['dir'], 'fundamentals/amended')
@@ -333,13 +454,13 @@ if config.getboolean('tiingo', 'has_fundamentals_addon'):
     update_timestamp = datetime.now()
 
     # Update amended fundamentals
-    last_update = get_last_update()
-    update_fundamentals(last_update)
+    result = get_symbols_to_update()
+    update_fundamentals(result)
 
     # Update reported fundamentals
-    last_update = get_last_update(True)
-    update_fundamentals(last_update, as_reported=True)
+    result = get_symbols_to_update(as_reported=True)
+    update_fundamentals(result, as_reported=True)
 
-    # Create a distinct table for amended fundamentals if roic in metrics list
-    if 'roic' in config['tiingo']['metrics'].split(","):
+    # Create a distinct table for amended fundamentals if roic, margins, or rank is in metrics list
+    if {'roic', 'margins', 'rank'}.intersection(metrics):
         create_fundamentals_amended_distinct()
