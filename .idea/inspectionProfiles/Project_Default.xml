@@ -438,6 +438,15 @@
     <inspection_tool class="PropertyName" enabled="false" level="ERROR" enabled_by_default="false" />
     <inspection_tool class="PublicFinalizeMethod" enabled="true" level="ERROR" enabled_by_default="true" />
     <inspection_tool class="PublicInstanceField" enabled="true" level="ERROR" enabled_by_default="true" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ignoredPackages">
+        <value>
+          <list size="1">
+            <item index="0" class="java.lang.String" itemvalue="TA-Lib" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
     <inspection_tool class="RandomDoubleCoercedToZero" enabled="true" level="ERROR" enabled_by_default="true" />
     <inspection_tool class="RedundantScopeBinding" enabled="false" level="WARNING" enabled_by_default="false" />
     <inspection_tool class="RedundantToBinding" enabled="false" level="WARNING" enabled_by_default="false" />

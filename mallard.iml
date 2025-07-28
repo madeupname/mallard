@@ -5,8 +5,16 @@
   </component>
   <component name="NewModuleRootManager" inherit-compiler-output="true">
     <exclude-output />
-    <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="Python 3.11 (tradinglib)" jdkType="Python SDK" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/.history" />
+      <excludeFolder url="file://$MODULE_DIR$/mallard.egg-info" />
+    </content>
+    <orderEntry type="jdk" jdkName="Python 3.11 (CUDA)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+  <component name="PackageRequirementsSettings">
+    <option name="versionSpecifier" value="Strong equality (==x.y.z)" />
+    <option name="removeUnused" value="true" />
+    <option name="keepMatchingSpecifier" value="false" />
   </component>
 </module>
