@@ -1,25 +1,64 @@
 import os
-
-from limits import RateLimitItemPerHour, storage
-from limits.strategies import MovingWindowRateLimiter
+import configparser
 import time
+from datetime import datetime, timedelta
+import threading
 
-# Define the rate limit (e.g., 2 calls per second)
-max_calls = 9500
-# max_calls = int(max_calls)
+# Get config file
+config_file = os.getenv('MALLARD_CONFIG')
+if not config_file:
+    raise Exception("Environment variable MALLARD_CONFIG not set")
+config = configparser.ConfigParser()
+config.read(config_file)
+
+max_calls = config.getint('tiingo', 'max_calls')
 if max_calls <= 0:
     raise Exception("AV_MAX_CALLS must be an integer greater than 0")
-rate_limit = RateLimitItemPerHour(max_calls)
-memory_storage = storage.MemoryStorage()
-limiter = MovingWindowRateLimiter(memory_storage)
+
+
+class WallClockHourRateLimiter:
+    def __init__(self, max_calls_per_hour):
+        self.max_calls = max_calls_per_hour
+        self.current_hour = None
+        self.call_count = 0
+        self.lock = threading.Lock()
+    
+    def can_make_call(self):
+        """Check if we can make a call within the current wall clock hour"""
+        with self.lock:
+            now = datetime.now()
+            current_hour = now.replace(minute=0, second=0, microsecond=0)
+            
+            # Reset counter if we're in a new hour
+            if self.current_hour != current_hour:
+                self.current_hour = current_hour
+                self.call_count = 0
+            
+            # Check if we can make the call
+            if self.call_count < self.max_calls:
+                self.call_count += 1
+                return True
+            return False
+    
+    def seconds_until_reset(self):
+        """Calculate seconds until the rate limit resets (next wall clock hour)"""
+        now = datetime.now()
+        next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+        return (next_hour - now).total_seconds()
+
+
+# Global rate limiter instance
+wall_clock_limiter = WallClockHourRateLimiter(max_calls)
 
 
 class RateLimiterContext:
     def __enter__(self):
-        # Attempt to hit the rate limiter for the given key
-        while not limiter.hit(rate_limit, "global"):
-            # If rate limit exceeded, sleep for a short period before retrying
-            time.sleep(1)
+        # Attempt to make a call within the rate limit
+        while not wall_clock_limiter.can_make_call():
+            # If rate limit exceeded, wait until the next wall clock hour
+            wait_time = wall_clock_limiter.seconds_until_reset()
+            print(f"Rate limit exceeded. Waiting {wait_time:.0f} seconds until next hour...")
+            time.sleep(wait_time + 1)  # Add 1 second buffer to ensure we're in the new hour
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Nothing special to do here; could log or handle exceptions if needed
