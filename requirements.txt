@@ -1,6 +1,6 @@
 duckdb==0.10.3
 polars==0.20.21
-Requests==2.32.3
+Requests==2.32.4
 SQLAlchemy==2.0.38
 alembic==1.13.1
 yfinance==0.2.65
