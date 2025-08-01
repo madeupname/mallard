@@ -14,5 +14,5 @@ numba~=0.59.1
 exchange_calendars~=4.8
 legitindicators~=0.0.72
 lumibot~=3.5.3
-jupyter_core~=5.7.1
+jupyter_core~=5.8.1
 weaviate-client~=4.6.2
